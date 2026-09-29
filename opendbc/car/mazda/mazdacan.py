@@ -177,10 +177,13 @@ def create_alert_command(packer, cam_msg: dict, ldw: bool, steer_required: bool)
     "S1_HBEAM",
   ]}
   values.update({
-    # TODO: what's the difference between all these? do we need to send all?
-    "HANDS_WARN_3_BITS": 0b111 if steer_required else 0,
+    # The stock camera's own hands-off warning sets HANDS_ON_STEER_WARN alone. HANDS_WARN_3_BITS
+    # is a warning code, not a level (5 precedes the camera dropping CTS), and 0b111 with
+    # HANDS_ON_STEER_WARN_2 put the radar into its hands-off state (CRZ_CTRL) on every run,
+    # which the stock encoding never did.
+    "HANDS_WARN_3_BITS": 0,
     "HANDS_ON_STEER_WARN": steer_required,
-    "HANDS_ON_STEER_WARN_2": steer_required,
+    "HANDS_ON_STEER_WARN_2": 0,
 
     # TODO: right lane works, left doesn't
     # TODO: need to do something about L/R

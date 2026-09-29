@@ -36,6 +36,16 @@ def test_alert_command_relays_state_but_not_the_tja_churn(packer):
   assert out["TJA"] == 0 and out["TJA_TRANSITION"] == 0
 
 
+@pytest.mark.parametrize("steer_required", [False, True])
+def test_alert_command_sends_the_stock_hands_off_warning(packer, steer_required):
+  cam_msg = {"LINE_VISIBLE": 0, "LINE_NOT_VISIBLE": 1, "LANE_LINES": 1, "BIT1": 1,
+             "BIT2": 0, "BIT3": 0, "NO_ERR_BIT": 0, "ERR_BIT": 0,
+             "TJA": 0, "TJA_TRANSITION": 0, "S1": 0, "S1_HBEAM": 0}
+  dat = mazdacan.create_alert_command(packer, cam_msg, ldw=False, steer_required=steer_required)[1]
+  out = parse_frame(CAM_LANEINFO, dat)
+  assert (out["HANDS_WARN_3_BITS"], out["HANDS_ON_STEER_WARN"], out["HANDS_ON_STEER_WARN_2"]) == (0, int(steer_required), 0)
+
+
 WHITE_HUD_BASE = bytes.fromhex("4201000000001040")  # the canonical OFF-family idle base
 
 
