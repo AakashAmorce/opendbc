@@ -52,45 +52,29 @@ def get_speed_dep_config():
   return cfg
 
 
-def get_steer_max_schedule(CP):
-  """The carcontroller's normalized-torque-to-CAN-counts scale by speed, read from the
-  brand's CarControllerParams. Returns (speed_bp, steer_max_v), or None when the brand
-  has no speed-dependent STEER_MAX (a flat scale cancels out of per-count LAF math, so
-  consumers skip the normalization entirely)."""
+def get_tune_scale(CP) -> float:
+  """STEER_MAX / TUNE_STEER_MAX: how far the carcontroller's scale sits from the one upstream-fitted
+  torque values (params.toml, NNLC models, the manual override) are expressed on. A latAccelFactor
+  is multiplied by it and a friction or an NNLC torque divided by it to put the same counts on the
+  wire. 1.0 when the brand declares no TUNE_STEER_MAX."""
   try:
     values = __import__(f'opendbc.car.{CP.brand}.values', fromlist=['CarControllerParams'])
     ccp = values.CarControllerParams(CP)
   except (ImportError, AttributeError, TypeError):
-    return None
-  lookup = getattr(ccp, 'STEER_MAX_LOOKUP', None)
-  if lookup is None:
-    return None
-  return [float(x) for x in lookup[0]], [float(x) for x in lookup[1]]
-
-
-def get_tune_scale_schedule(CP):
-  """STEER_MAX(v) / TUNE_STEER_MAX by speed: how far the carcontroller's scale sits from the one
-  a flat torque tune was fitted on. A flat tune multiplied by it (latAccelFactor) or divided by
-  it (friction) puts the same counts on the wire per m/s^2 at every speed as a build running the
-  fitted scale. Returns (speed_bp, factor_v), or None when the brand declares no speed-dependent
-  STEER_MAX or no tune scale."""
-  schedule = get_steer_max_schedule(CP)
-  if schedule is None:
-    return None
-  values = __import__(f'opendbc.car.{CP.brand}.values', fromlist=['CarControllerParams'])
-  tune_steer_max = getattr(values.CarControllerParams(CP), 'TUNE_STEER_MAX', None)
-  if tune_steer_max is None:
-    return None
-  return schedule[0], [v / float(tune_steer_max) for v in schedule[1]]
+    return 1.0
+  tune_steer_max = getattr(ccp, 'TUNE_STEER_MAX', None)
+  steer_max = getattr(ccp, 'STEER_MAX', None)
+  if tune_steer_max is None or steer_max is None:
+    return 1.0
+  return float(steer_max) / float(tune_steer_max)
 
 
 def get_steer_rail_schedule(CP):
   """Normalized fraction of the carcontroller's steer scale the EPS will actually deliver,
-  by speed: EPS_CEILING_LOOKUP / STEER_MAX(v), piecewise-linear on the union of both
-  schedules' breakpoints, clipped to 1.0. None when the brand declares no ceiling (the
-  EPS delivers the full scale everywhere). Lets a lateral controller treat reaching the
-  measured rail as actuator saturation instead of comparing against a full-scale command
-  it can never deliver above the ceiling's falloff."""
+  by speed: EPS_CEILING_LOOKUP / STEER_MAX, clipped to 1.0. None when the brand declares no
+  ceiling (the EPS delivers the full scale everywhere). Lets a lateral controller treat
+  reaching the measured rail as actuator saturation instead of comparing against a
+  full-scale command it can never deliver above the ceiling's falloff."""
   try:
     values = __import__(f'opendbc.car.{CP.brand}.values', fromlist=['CarControllerParams'])
     ccp = values.CarControllerParams(CP)
@@ -99,15 +83,7 @@ def get_steer_rail_schedule(CP):
   ceiling = getattr(ccp, 'EPS_CEILING_LOOKUP', None)
   if ceiling is None:
     return None
-  sm_lookup = getattr(ccp, 'STEER_MAX_LOOKUP', None)
-  if sm_lookup is not None:
-    sm_bp, sm_v = [float(x) for x in sm_lookup[0]], [float(x) for x in sm_lookup[1]]
-  else:
-    sm_bp, sm_v = [0.0], [float(ccp.STEER_MAX)]
-  ceil_bp, ceil_v = [float(x) for x in ceiling[0]], [float(x) for x in ceiling[1]]
-  bp = sorted(set(ceil_bp + sm_bp))
-  rail = [min(1.0, float(np.interp(v, ceil_bp, ceil_v)) / float(np.interp(v, sm_bp, sm_v))) for v in bp]
-  return bp, rail
+  return [float(x) for x in ceiling[0]], [min(1.0, float(x) / float(ccp.STEER_MAX)) for x in ceiling[1]]
 
 
 def get_steer_slew_schedule(CP):
@@ -141,35 +117,30 @@ def get_steer_slew_schedule(CP):
 def get_speed_dep_config_for_car(CP):
   """The speed-dep entry for this car, honoring the entry's validity predicate.
 
-  An entry measured on a zero-min-steer-speed EPS (e.g. an EPS-swapped car) declares
-  requires_steer_to_zero: its LAF values were learned under that EPS's STEER_MAX
-  schedule, and the same model with its stock EPS runs a different schedule, so the
-  seeds would be mis-scaled there. minSteerSpeed == 0 is the brand-neutral statement
-  that the EPS steers to a stop, which is what the entry requires. An entry that stays
-  active for a car with a floor loses the bins centered below it.
-
-  An active entry carries the platform's STEER_MAX schedule under 'steer_max_schedule'
-  when one exists: bin LAF values are normalized units learned under one scale each,
-  so a consumer interpolating across bins needs the schedule to do it in per-count
-  space instead of smearing the scale's step across the bin span."""
+  An entry measured behind a zero-min-steer-speed EPS (e.g. an EPS-swapped car) declares
+  requires_steer_to_zero: its values were learned behind that EPS firmware, and the same
+  model on its stock EPS steers only above a floor, through the firmware's own dead band.
+  minSteerSpeed == 0 is the brand-neutral statement that the EPS steers to a stop, which is
+  what the entry requires. An entry that stays active for a car with a floor loses the bins
+  centered below it, and 'min_speed' keeps the first remaining bin's lower edge where the
+  full table puts it rather than widening that bin down to the default floor."""
   cfg = get_speed_dep_config().get(CP.carFingerprint, {})
   if cfg.get('requires_steer_to_zero') and CP.minSteerSpeed > 0:
     return {}
   cfg = dict(cfg)
   if cfg and CP.minSteerSpeed > 0 and 'speed_bp' in cfg:
     # A car never steers below its floor, so bins centered there hold seeds it can neither use
-    # nor learn against; a legacy-firmware Mazda keeps only the bins learned at its road-speed scale.
-    keep = [i for i, v in enumerate(cfg['speed_bp']) if v >= CP.minSteerSpeed]
+    # nor learn against.
+    centers = cfg['speed_bp']
+    keep = [i for i, v in enumerate(centers) if v >= CP.minSteerSpeed]
+    if keep and keep[0] > 0:
+      cfg['min_speed'] = (centers[keep[0] - 1] + centers[keep[0]]) / 2
     for key in ('speed_bp', 'laf_bp', 'friction_bp'):
       if key in cfg:
         if keep:
           cfg[key] = [cfg[key][i] for i in keep]
         else:
           del cfg[key]
-  if cfg:
-    schedule = get_steer_max_schedule(CP)
-    if schedule is not None:
-      cfg['steer_max_schedule'] = schedule
   return cfg
 
 
