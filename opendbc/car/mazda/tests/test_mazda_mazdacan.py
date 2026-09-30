@@ -11,7 +11,7 @@ import pytest
 
 from opendbc.car.mazda import mazdacan
 from opendbc.car.mazda.values import Buttons
-from opendbc.car.mazda.tests.conftest import CAM_LANEINFO, LEAD_TRACK, parse_frame
+from opendbc.car.mazda.tests.conftest import CAM_LANEINFO, LEAD_TRACK, hands_code, parse_frame
 
 
 def crz_info_reference_checksum(dat):
@@ -44,9 +44,8 @@ def test_alert_command_sends_the_frame_the_cluster_draws(packer, steer_required)
              "BIT2": 0, "BIT3": 0, "NO_ERR_BIT": 0, "ERR_BIT": 0,
              "TJA": 0, "TJA_TRANSITION": 0, "S1": 0, "S1_HBEAM": 0}
   dat = mazdacan.create_alert_command(packer, cam_msg, ldw=False, steer_required=steer_required)[1]
+  assert hands_code(dat) == ((0b111, 1, 1) if steer_required else (0, 0, 0))
   out = parse_frame(CAM_LANEINFO, dat)
-  expected = (0b111, 1, 1) if steer_required else (0, 0, 0)
-  assert (out["HANDS_WARN_3_BITS"], out["HANDS_ON_STEER_WARN"], out["HANDS_ON_STEER_WARN_2"]) == expected
   assert out["LDW_WARN_LL"] == 0 and out["LDW_WARN_RL"] == 0
 
 
