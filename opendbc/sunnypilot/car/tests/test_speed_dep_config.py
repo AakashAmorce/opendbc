@@ -11,7 +11,7 @@ from opendbc.car.mazda.interface import CarInterface
 from opendbc.car.mazda.values import CAR, MazdaFlags
 from opendbc.car.structs import CarParams
 from opendbc.sunnypilot.car.interfaces import (get_speed_dep_config, get_speed_dep_config_for_car, get_steer_max_schedule,
-                                             get_steer_rail_schedule, get_steer_slew_schedule)
+                                             get_steer_rail_schedule, get_steer_slew_schedule, get_tune_scale_schedule)
 
 CX5_2022_SCHEDULE = ([0.0, 14.2, 14.5], [1200.0, 1200.0, 800.0])
 
@@ -23,14 +23,14 @@ def cx5_2022_cp() -> CarParams:
   return cp
 
 
-def ke_swapped_cp() -> CarParams:
-  # the 2016.5 report: a KE body with the 2022 CX-5 EPS the seed bins were learned under
+def swapped_cp(platform=CAR.MAZDA_CX5_KE) -> CarParams:
+  # a chassis behind the 2022 CX-5 EPS the seed bins were learned under (the 2016.5 KE report)
   fw = CarParams.CarFw()
   fw.ecu = CarParams.Ecu.eps
   fw.address = 0x730
   fw.subAddress = 0
   fw.fwVersion = b'KSD5-3210X-C-00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
-  cp = CarInterface.get_params(CAR.MAZDA_CX5_KE, gen_empty_fingerprint(), [fw], alpha_long=False, is_release=False, docs=False)
+  cp = CarInterface.get_params(platform, gen_empty_fingerprint(), [fw], alpha_long=False, is_release=False, docs=False)
   assert cp.flags & MazdaFlags.STEER_TO_ZERO_EPS and cp.minSteerSpeed == 0.0
   return cp
 
@@ -99,7 +99,7 @@ class TestSteerMaxSchedule:
   def test_ke_seeds_apply_under_the_donor_eps(self):
     # the tables start identical: the donor EPS is the EPS the CX-5 2022 bins were
     # learned under, and the swap carries the same STEER_MAX schedule with them
-    ke = get_speed_dep_config_for_car(ke_swapped_cp())
+    ke = get_speed_dep_config_for_car(swapped_cp())
     cx5_2022 = get_speed_dep_config_for_car(cx5_2022_cp())
     for key in ('speed_bp', 'laf_bp', 'friction_bp', 'steer_max_schedule'):
       assert ke[key] == cx5_2022[key], key
@@ -108,6 +108,21 @@ class TestSteerMaxSchedule:
     # a stock-EPS KE keeps the flat 800-count scale, so the entry must not apply
     cp = brand_cp(brand="mazda", fingerprint=str(CAR.MAZDA_CX5_KE), min_steer_speed=20.0)
     assert get_speed_dep_config_for_car(cp) == {}
+
+  SWAP_CHASSIS = [CAR.MAZDA_CX5, CAR.MAZDA_CX9, CAR.MAZDA_3, CAR.MAZDA_6]
+
+  @pytest.mark.parametrize("platform", SWAP_CHASSIS)
+  def test_swapped_chassis_take_the_donor_table(self, platform):
+    # without an entry the carcontroller's 1200 -> 800 step ran under the generic bins, one of
+    # which spans it, and a plain interp smeared it across the neighbors
+    cfg = get_speed_dep_config_for_car(swapped_cp(platform))
+    cx5_2022 = get_speed_dep_config_for_car(cx5_2022_cp())
+    for key in ('speed_bp', 'laf_bp', 'friction_bp', 'steer_max_schedule', 'seed_version'):
+      assert cfg[key] == cx5_2022[key], key
+
+  @pytest.mark.parametrize("platform", SWAP_CHASSIS)
+  def test_swapped_chassis_entries_withheld_on_the_stock_eps(self, platform):
+    assert get_speed_dep_config_for_car(brand_cp(brand="mazda", fingerprint=str(platform), min_steer_speed=20.0)) == {}
 
   def test_config_copy_not_cached_dict(self):
     a = get_speed_dep_config_for_car(cx5_2022_cp())
@@ -176,3 +191,18 @@ class TestLegacyFirmwareEntry:
   def test_steer_to_zero_entry_is_untouched(self):
     cfg = get_speed_dep_config_for_car(cx5_2022_cp())
     assert cfg['speed_bp'] == get_speed_dep_config()['MAZDA_CX5_2022']['speed_bp']
+
+
+class TestTuneScaleSchedule:
+  def test_mazda_eps_hardware_rescales_to_the_800_tune(self):
+    expected = ([0.0, 14.2, 14.5], [1.5, 1.5, 1.0])
+    assert get_tune_scale_schedule(cx5_2022_cp()) == expected
+    assert get_tune_scale_schedule(legacy_fw_cp()) == expected
+
+  @pytest.mark.parametrize("cp_kwargs", [
+    dict(brand="mazda", min_steer_speed=20.0),  # upstream's flat 800 envelope
+    dict(brand="toyota", fingerprint="TOYOTA_RAV4_TSS2"),
+    dict(brand="notabrand"),
+  ], ids=["mazda_stock_envelope", "flat_steer_max_brand", "unknown_brand"])
+  def test_flat_scales_return_none(self, cp_kwargs):
+    assert get_tune_scale_schedule(brand_cp(**cp_kwargs)) is None

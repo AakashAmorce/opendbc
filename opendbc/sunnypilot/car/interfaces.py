@@ -68,6 +68,22 @@ def get_steer_max_schedule(CP):
   return [float(x) for x in lookup[0]], [float(x) for x in lookup[1]]
 
 
+def get_tune_scale_schedule(CP):
+  """STEER_MAX(v) / TUNE_STEER_MAX by speed: how far the carcontroller's scale sits from the one
+  a flat torque tune was fitted on. A flat tune multiplied by it (latAccelFactor) or divided by
+  it (friction) puts the same counts on the wire per m/s^2 at every speed as a build running the
+  fitted scale. Returns (speed_bp, factor_v), or None when the brand declares no speed-dependent
+  STEER_MAX or no tune scale."""
+  schedule = get_steer_max_schedule(CP)
+  if schedule is None:
+    return None
+  values = __import__(f'opendbc.car.{CP.brand}.values', fromlist=['CarControllerParams'])
+  tune_steer_max = getattr(values.CarControllerParams(CP), 'TUNE_STEER_MAX', None)
+  if tune_steer_max is None:
+    return None
+  return schedule[0], [v / float(tune_steer_max) for v in schedule[1]]
+
+
 def get_steer_rail_schedule(CP):
   """Normalized fraction of the carcontroller's steer scale the EPS will actually deliver,
   by speed: EPS_CEILING_LOOKUP / STEER_MAX(v), piecewise-linear on the union of both

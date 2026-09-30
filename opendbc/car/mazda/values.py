@@ -104,6 +104,9 @@ class CarControllerParams:
       # there and the rest of the schedule is the same hardware.
       self.STEER_MAX = 1200        # theoretical max_steer 2047
       self.STEER_MAX_LOOKUP = ([0., 14.2, 14.5], [1200, 1200, 800])
+      # The scale a flat torque tune is expressed on (params.toml, torqued's global fit above 15
+      # m/s, a manual override): upstream's STEER_MAX. Consumers rescale it to STEER_MAX_LOOKUP.
+      self.TUNE_STEER_MAX = 800
       # Clamp to the measured applied-torque ceiling so controlsd can detect saturation.
       self.EPS_CEILING_LOOKUP = ([8.0, 8.5, 9.4, 10.3, 11.2, 12.1, 13.0, 13.9, 14.5],
                                  [1148, 1132, 1092, 1048, 1012,  920,  808,  676,  620])
