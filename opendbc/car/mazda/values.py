@@ -23,8 +23,10 @@ class CarControllerParams:
   # The measured envelope's full scale, equal to the panda's max_torque for it.
   EPS_STEER_MAX = 1200  # theoretical max_steer 2047
   # Upstream's STEER_MAX: the scale params.toml's Mazda tunes, sunnypilot's NNLC models and the
-  # manual torque override are expressed on. get_tune_scale converts them to STEER_MAX.
+  # manual torque override are expressed on. Every steering Mazda runs the envelope, so one
+  # ratio converts them (latAccelFactor x TUNE_SCALE, friction / TUNE_SCALE).
   TUNE_STEER_MAX = 800
+  TUNE_SCALE = EPS_STEER_MAX / TUNE_STEER_MAX
 
   ACCEL_MAX = 2.0   # m/s2
   ACCEL_MIN = -3.5  # m/s2
@@ -132,7 +134,7 @@ class CarControllerParams:
     else:
       # Upstream's envelope. The interface no longer selects it for any Mazda; the panda keeps
       # it as the no-param default, so flags == 0 must still build.
-      self.STEER_MAX = 800         # theoretical max_steer 2047
+      self.STEER_MAX = self.TUNE_STEER_MAX
       self.STEER_DELTA_UP = 10
       self.STEER_DELTA_DOWN = 25
       self.STEER_DRIVER_MULTIPLIER = 1    # upstream stock
@@ -257,12 +259,11 @@ class LKAS_LIMITS:
   ENABLE_SPEED = 52     # kph
 
 
-# Torque tunes on the EPS envelope's STEER_MAX, for a platform whose params.toml entry is
-# borrowed: (latAccelFactor, friction). The CX-5 2022 substitutes the CX-9 2021's, 2.64 once
-# converted; torqued's global fit on a CX-5 2022 (1.222 / 0.154 at 800 counts, 2026-09-29)
-# converts to 1.83 / 0.102 (docs/zoompilot/lateral-tune.md).
+# Torque tunes for a platform whose params.toml entry is borrowed, on params.toml's scale:
+# (latAccelFactor, friction). The CX-5 2022 substitutes the CX-9 2021's 1.76; its own global
+# learner reads 1.222 (2026-09-29, docs/zoompilot/lateral-tune.md).
 TORQUE_TUNES = {
-  CAR.MAZDA_CX5_2022: (1.83, 0.102),
+  CAR.MAZDA_CX5_2022: (1.222, 0.154),
 }
 
 

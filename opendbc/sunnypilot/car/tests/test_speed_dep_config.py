@@ -176,9 +176,8 @@ class TestTuneScale:
     assert get_tune_scale(make_cp()) == 1.5
 
   @pytest.mark.parametrize("cp_kwargs", [
-    dict(brand="mazda", min_steer_speed=20.0),  # upstream's flat 800 envelope
     dict(brand="toyota", fingerprint="TOYOTA_RAV4_TSS2"),
     dict(brand="notabrand"),
-  ], ids=["mazda_stock_envelope", "no_tune_scale_brand", "unknown_brand"])
+  ], ids=["no_tune_scale_brand", "unknown_brand"])
   def test_other_scales_are_one(self, cp_kwargs):
     assert get_tune_scale(brand_cp(**cp_kwargs)) == 1.0

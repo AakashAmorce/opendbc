@@ -19,13 +19,12 @@ class CarInterface(CarInterfaceBase):
 
   @staticmethod
   def configure_torque_tune(candidate, tune, steering_angle_deadzone_deg=0.0):
-    # Every steering Mazda runs the EPS envelope's STEER_MAX, and params.toml's tunes were fitted
-    # on upstream's. An override rather than a conversion in _get_params, so sunnypilot's second
-    # call (enforced torque, NNLC) converts as well.
+    # params.toml's tunes are on upstream's STEER_MAX. An override rather than a conversion in
+    # _get_params, so sunnypilot's second call (enforced torque, NNLC) converts as well.
     CarInterfaceBase.configure_torque_tune(candidate, tune, steering_angle_deadzone_deg)
-    scale = CarControllerParams.EPS_STEER_MAX / CarControllerParams.TUNE_STEER_MAX
-    tune.torque.latAccelFactor, tune.torque.friction = TORQUE_TUNES.get(
-      candidate, (tune.torque.latAccelFactor * scale, tune.torque.friction / scale))
+    lat_accel_factor, friction = TORQUE_TUNES.get(candidate, (tune.torque.latAccelFactor, tune.torque.friction))
+    tune.torque.latAccelFactor = lat_accel_factor * CarControllerParams.TUNE_SCALE
+    tune.torque.friction = friction / CarControllerParams.TUNE_SCALE
 
   @staticmethod
   def _get_params(ret: structs.CarParams, candidate, fingerprint, car_fw, alpha_long, is_release, docs) -> structs.CarParams:

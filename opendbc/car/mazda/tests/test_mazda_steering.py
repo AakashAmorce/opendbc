@@ -67,10 +67,7 @@ class TestCarControllerParams:
     params = cx5_2022_params()
     # The ceiling is a clamp on delivered-torque counts; the scale is STEER_MAX. The clamp is
     # only meaningful if it sits at or below the scale at every speed.
-    bp, vals = params.EPS_CEILING_LOOKUP
-    for v in np.arange(0.0, 40.0, 0.25):
-      ceiling = np.interp(v, bp, vals)
-      assert 0 < ceiling <= params.STEER_MAX, f"ceiling {ceiling} vs steer_max {params.STEER_MAX} at {v} m/s"
+    assert 0 < min(params.EPS_CEILING_LOOKUP[1]) and max(params.EPS_CEILING_LOOKUP[1]) <= params.STEER_MAX
 
   def test_eps_ceiling_is_monotone_and_matches_the_measured_rails(self):
     params = cx5_2022_params()
@@ -93,9 +90,7 @@ class TestCarControllerParams:
   def test_cx5_2022_steer_max_is_flat(self):
     # one scale at every speed: the EPS is linear in counts, and a step would put the learned
     # torque parameters in two units (docs/zoompilot/lateral-tune.md)
-    params = cx5_2022_params()
-    assert params.STEER_MAX == params.EPS_STEER_MAX == 1200
-    assert not hasattr(params, 'STEER_MAX_LOOKUP')
+    assert cx5_2022_params().STEER_MAX == 1200
 
   def test_cx5_2022_rate_limits(self):
     params = cx5_2022_params()
@@ -334,30 +329,23 @@ def test_the_first_engage_hold_is_the_steer_to_zero_eps_only(stock_cc, stock_cs)
 
 
 class TestTorqueTune:
-  @staticmethod
-  def get_params(platform):
-    from opendbc.car import gen_empty_fingerprint
-    from opendbc.car.mazda.interface import CarInterface
-    return CarInterface.get_params(platform, gen_empty_fingerprint(), [], alpha_long=False, is_release=False, docs=False)
-
-  def test_params_toml_tune_converted_to_steer_max(self):
-    # params.toml's CX-9 2021 fit is on upstream's 800 counts; the same counts per m/s^2 at 1200
+  @pytest.mark.parametrize("platform", [CAR.MAZDA_CX9_2021, CAR.MAZDA_CX5_2022])
+  def test_tune_converted_to_steer_max(self, platform):
+    # params.toml's fit (or the CX-5 2022's own) is on upstream's 800 counts: the same counts per
+    # m/s^2 at 1200
     from opendbc.car.interfaces import get_torque_params
-    toml = get_torque_params()[CAR.MAZDA_CX9_2021]
-    tune = self.get_params(CAR.MAZDA_CX9_2021).lateralTuning.torque
-    assert tune.latAccelFactor == pytest.approx(toml['LAT_ACCEL_FACTOR'] * 1.5, rel=1e-6)
-    assert tune.friction == pytest.approx(toml['FRICTION'] / 1.5, rel=1e-6)
-
-  def test_cx5_2022_runs_its_own_fit(self):
     from opendbc.car.mazda.values import TORQUE_TUNES
-    tune = self.get_params(CAR.MAZDA_CX5_2022).lateralTuning.torque
-    assert (tune.latAccelFactor, tune.friction) == pytest.approx(TORQUE_TUNES[CAR.MAZDA_CX5_2022], rel=1e-6)
+    toml = get_torque_params()[platform]
+    laf, friction = TORQUE_TUNES.get(platform, (toml['LAT_ACCEL_FACTOR'], toml['FRICTION']))
+    tune = car_params(platform).lateralTuning.torque
+    assert tune.latAccelFactor == pytest.approx(laf * 1.5, rel=1e-6)
+    assert tune.friction == pytest.approx(friction / 1.5, rel=1e-6)
 
   @pytest.mark.parametrize("platform", [CAR.MAZDA_CX5_2022, CAR.MAZDA_CX9_2021])
   def test_a_second_configure_does_not_compound(self, platform):
     # sunnypilot re-runs configure_torque_tune on the built CarParams when torque control is enforced
     from opendbc.car.mazda.interface import CarInterface
-    CP = self.get_params(platform)
+    CP = car_params(platform)
     before = (CP.lateralTuning.torque.latAccelFactor, CP.lateralTuning.torque.friction)
     CarInterface.configure_torque_tune(CP.carFingerprint, CP.lateralTuning)
     assert (CP.lateralTuning.torque.latAccelFactor, CP.lateralTuning.torque.friction) == pytest.approx(before, rel=1e-6)

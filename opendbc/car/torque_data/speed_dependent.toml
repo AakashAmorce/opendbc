@@ -4,12 +4,9 @@
 # existing caches and restart learning; an omitted version is zero.
 
 [MAZDA_CX5_2022]
-# On the EPS envelope's flat 1200-count STEER_MAX, with the feel of the stepped scale: the values
-# one CX-5 2022 drives on (its LiveTorqueParametersSP, 2026-09-29) converted exactly, bins from
-# 16.4 m/s up having been learned at 800 counts (LAF x 1.5, friction / 1.5). 34.5 and 37 m/s
-# replace 35 and take that table's values there, within 1% of it at every speed; torqued's fit
-# of the car's drives since 2026-09-01 puts 37 m/s (above 80 mph) at 2.76, for the learner to
-# find. Version 2 retires the stepped-scale caches.
+# One CX-5 2022's learned values (2026-09-29), converted to the flat 1200-count STEER_MAX with
+# the same counts on the wire; 34.5 and 37 m/s take that table's values there. Version 2 retires
+# the stepped-scale caches. Provenance and fits: docs/zoompilot/lateral-tune.md, "Seeds".
 speed_bp    = [6.5, 9.5, 12.0, 16.4, 21.0, 28.0, 34.5, 37.0]
 laf_bp      = [2.41, 2.72, 2.29, 1.72, 1.75, 2.28, 2.54, 2.56]
 friction_bp = [0.188, 0.143, 0.126, 0.095, 0.084, 0.080, 0.071, 0.070]

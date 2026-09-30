@@ -52,21 +52,25 @@ def get_speed_dep_config():
   return cfg
 
 
-def get_tune_scale(CP) -> float:
-  """STEER_MAX / TUNE_STEER_MAX: how far the carcontroller's scale sits from the one upstream-fitted
-  torque values (params.toml, NNLC models, the manual override) are expressed on. A latAccelFactor
-  is multiplied by it and a friction or an NNLC torque divided by it to put the same counts on the
-  wire. 1.0 when the brand declares no TUNE_STEER_MAX."""
+def _controller_params(CP):
+  """The brand's CarControllerParams built from CP, or None when it cannot be."""
   try:
     values = __import__(f'opendbc.car.{CP.brand}.values', fromlist=['CarControllerParams'])
-    ccp = values.CarControllerParams(CP)
+    return values.CarControllerParams(CP)
   except (ImportError, AttributeError, TypeError):
+    return None
+
+
+def get_tune_scale(CP) -> float:
+  """How far the carcontroller's STEER_MAX sits from the one upstream-fitted torque values
+  (params.toml, NNLC models, the manual override) are expressed on: a latAccelFactor is
+  multiplied by it and a friction or an NNLC torque divided by it to put the same counts on the
+  wire. The brand's CarControllerParams.TUNE_SCALE, 1.0 when it declares none."""
+  try:
+    values = __import__(f'opendbc.car.{CP.brand}.values', fromlist=['CarControllerParams'])
+    return float(getattr(values.CarControllerParams, 'TUNE_SCALE', 1.0))
+  except (ImportError, AttributeError):
     return 1.0
-  tune_steer_max = getattr(ccp, 'TUNE_STEER_MAX', None)
-  steer_max = getattr(ccp, 'STEER_MAX', None)
-  if tune_steer_max is None or steer_max is None:
-    return 1.0
-  return float(steer_max) / float(tune_steer_max)
 
 
 def get_steer_rail_schedule(CP):
@@ -75,11 +79,7 @@ def get_steer_rail_schedule(CP):
   ceiling (the EPS delivers the full scale everywhere). Lets a lateral controller treat
   reaching the measured rail as actuator saturation instead of comparing against a
   full-scale command it can never deliver above the ceiling's falloff."""
-  try:
-    values = __import__(f'opendbc.car.{CP.brand}.values', fromlist=['CarControllerParams'])
-    ccp = values.CarControllerParams(CP)
-  except (ImportError, AttributeError, TypeError):
-    return None
+  ccp = _controller_params(CP)
   ceiling = getattr(ccp, 'EPS_CEILING_LOOKUP', None)
   if ceiling is None:
     return None
@@ -94,11 +94,7 @@ def get_steer_slew_schedule(CP):
   actuator is still walking toward (one slew step behind) from one the driver envelope or
   the EPS rail is holding back. None when the brand's CarControllerParams lacks the
   attributes or cannot be built from CP (the consumer keeps upstream's flag as is)."""
-  try:
-    values = __import__(f'opendbc.car.{CP.brand}.values', fromlist=['CarControllerParams'])
-    ccp = values.CarControllerParams(CP)
-  except (ImportError, AttributeError, TypeError):
-    return None
+  ccp = _controller_params(CP)
   delta_up = getattr(ccp, 'STEER_DELTA_UP', None)
   delta_down = getattr(ccp, 'STEER_DELTA_DOWN', None)
   if delta_up is None or delta_down is None:
