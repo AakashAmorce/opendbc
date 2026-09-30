@@ -37,3 +37,22 @@ speed_bp    = [6.5, 9.5, 12.0, 16.4, 21.0, 28.0, 35.0]
 laf_bp      = [2.42, 2.86, 2.29, 1.21, 1.22, 1.53, 1.76]
 friction_bp = [0.160, 0.143, 0.124, 0.145, 0.133, 0.122, 0.108]
 seed_version = 1
+
+# Swapped chassis: the engine-firmware swap fallback names any of these behind the 2022 CX-5 EPS,
+# which carries its STEER_MAX schedule with it. They take the CX-5 2022 table like the KE; the
+# stock EPS on each keeps the flat legacy path.
+[MAZDA_CX5]
+substitute = "MAZDA_CX5_2022"
+requires_steer_to_zero = true
+
+[MAZDA_CX9]
+substitute = "MAZDA_CX5_2022"
+requires_steer_to_zero = true
+
+[MAZDA_3]
+substitute = "MAZDA_CX5_2022"
+requires_steer_to_zero = true
+
+[MAZDA_6]
+substitute = "MAZDA_CX5_2022"
+requires_steer_to_zero = true
