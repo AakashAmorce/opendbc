@@ -276,8 +276,6 @@ STEER_TO_ZERO_EPS_FW = {
 
 # Platforms that ship the steer-to-zero EPS from the factory: what an unread EPS falls back to.
 STEER_TO_ZERO_PLATFORMS = frozenset({CAR.MAZDA_CX5_2022, CAR.MAZDA_CX8_2023})
-# Bodies whose stock EPS has never been seen steering: dashcam until a steer-to-zero EPS is read.
-SWAP_ONLY_PLATFORMS = frozenset({CAR.MAZDA_CX5_KE})
 
 # The 2016.5-era radar kept by an EPS-swapped older body. Listed for fingerprinting, but
 # it never publishes 0x361-0x366 on bus 0; its one frame is fully static — no counter, no

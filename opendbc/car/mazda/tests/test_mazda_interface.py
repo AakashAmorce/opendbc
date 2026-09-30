@@ -17,7 +17,7 @@ from opendbc.car.mazda.fingerprints import FW_VERSIONS
 from opendbc.car.mazda.interface import CarInterface
 from opendbc.car.mazda.tests.conftest import CAM_LKAS, CAM_LANEINFO, DBC_NAME, car_interface, car_params, car_params_sp
 from opendbc.car.mazda.values import CAR, DBC, G46L_RADAR_FW, LKAS_LIMITS, STEER_TO_ZERO_EPS_FW, STEER_TO_ZERO_PLATFORMS, \
-  SWAP_ONLY_PLATFORMS, MazdaFlags, MazdaSafetyFlags
+  MazdaFlags, MazdaSafetyFlags
 
 Ecu = structs.CarParams.Ecu
 
@@ -105,9 +105,9 @@ class TestMazdaEpsSwap:
     assert not cx9_2021.alphaLongitudinalAvailable
 
   @pytest.mark.parametrize("candidate", list(CAR))
-  def test_admission_follows_the_platform(self, candidate):
-    # every body drives on its own EPS except one never seen steering stock, which a swap admits
-    assert car_params(candidate).dashcamOnly == (candidate in SWAP_ONLY_PLATFORMS)
+  def test_every_platform_steers_on_its_own_eps(self, candidate):
+    # older firmware keeps its floor and lockout; none of it makes a body dashcam only
+    assert not car_params(candidate).dashcamOnly
     assert not car_params(candidate, car_fw=eps_fw(SWAPPED_EPS_FW)).dashcamOnly
 
   @pytest.mark.parametrize("candidate", list(CAR))
@@ -134,7 +134,7 @@ class TestMazdaEpsSwap:
     # EPS swap still lifts the steering lockouts
     stock = car_params(CAR.MAZDA_CX5_KE)
     assert stock.radarUnavailable
-    assert stock.dashcamOnly
+    assert not stock.dashcamOnly
 
     swapped = car_params(CAR.MAZDA_CX5_KE, car_fw=eps_fw(SWAPPED_EPS_FW))
     assert swapped.radarUnavailable
@@ -166,9 +166,8 @@ class TestMazdaEpsSwap:
 
   @pytest.mark.parametrize("candidate", [CAR.MAZDA_CX5_KE, CAR.MAZDA_CX5, CAR.MAZDA_CX9, CAR.MAZDA_3, CAR.MAZDA_6])
   def test_docs_are_generated_without_firmware(self, candidate):
-    # car_fw is empty in docs mode, and the car picker consumes docs mode: a firmware-gated
-    # platform must stay selectable there. dashcamOnly is a measured-hardware call, so the
-    # on-device EPS check keeps the gate; docs describe the stock car from the platform table.
+    # car_fw is empty in docs mode, and the car picker consumes docs mode: every platform must
+    # stay selectable there.
     from opendbc.car import gen_empty_fingerprint
     from opendbc.car.mazda.interface import CarInterface
     CP = CarInterface.get_params(candidate, gen_empty_fingerprint(), [], alpha_long=False, is_release=False, docs=True)
