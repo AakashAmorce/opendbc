@@ -6,7 +6,7 @@ from opendbc.car.interfaces import CarInterfaceBase
 from opendbc.car.mazda.carcontroller import CarController
 from opendbc.car.mazda.carstate import CarState
 from opendbc.car.mazda.radar_interface import RadarInterface
-from opendbc.car.mazda.values import DBC, G46L_RADAR_FW, LKAS_LIMITS, STEER_TO_ZERO_EPS_FW, STEER_TO_ZERO_PLATFORMS, SUPPORTED_PLATFORMS, MazdaFlags, \
+from opendbc.car.mazda.values import DBC, G46L_RADAR_FW, LKAS_LIMITS, STEER_TO_ZERO_EPS_FW, STEER_TO_ZERO_PLATFORMS, SWAP_ONLY_PLATFORMS, MazdaFlags, \
   MazdaSafetyFlags, WMI, platform_from_vin
 from opendbc.car.vin import Vin, is_valid_vin
 from opendbc.sunnypilot.car.mazda.values import MazdaFlagsSP
@@ -62,10 +62,11 @@ class CarInterface(CarInterfaceBase):
       ret.stopAccel = -1.024  # stock MRCC standstill command
       ret.longitudinalActuatorDelay = 0.36  # measured ~0.3 s dead time + ~0.3 s first-order lag
 
-    # Older EPS firmware enforces hands-off and low-speed steering lockouts.
+    # Older EPS firmware steers above its floor and reports its hands-off lockout as a fault, so
+    # every body drives on its own EPS except one never seen steering stock.
     # Docs mode carries no real EPS firmware, so leave dashcamOnly at the default.
     if not docs:
-      ret.dashcamOnly = candidate not in SUPPORTED_PLATFORMS and not steer_to_zero
+      ret.dashcamOnly = candidate in SWAP_ONLY_PLATFORMS and not steer_to_zero
 
     carlog.debug({"event": "mazdaRadarVerdict", "radarUnavailable": ret.radarUnavailable,
                   "platformClaim": Bus.radar in DBC[candidate], "g46lRadar": g46l_radar, "steerToZeroEps": steer_to_zero})

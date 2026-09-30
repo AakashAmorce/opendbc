@@ -16,7 +16,8 @@ from opendbc.car.mazda.carcontroller import CarController
 from opendbc.car.mazda.fingerprints import FW_VERSIONS
 from opendbc.car.mazda.interface import CarInterface
 from opendbc.car.mazda.tests.conftest import CAM_LKAS, CAM_LANEINFO, DBC_NAME, car_interface, car_params, car_params_sp
-from opendbc.car.mazda.values import CAR, DBC, G46L_RADAR_FW, LKAS_LIMITS, STEER_TO_ZERO_EPS_FW, STEER_TO_ZERO_PLATFORMS, MazdaFlags, MazdaSafetyFlags
+from opendbc.car.mazda.values import CAR, DBC, G46L_RADAR_FW, LKAS_LIMITS, STEER_TO_ZERO_EPS_FW, STEER_TO_ZERO_PLATFORMS, \
+  SWAP_ONLY_PLATFORMS, MazdaFlags, MazdaSafetyFlags
 
 Ecu = structs.CarParams.Ecu
 
@@ -57,18 +58,18 @@ G46L_FW = _g46l_stem + b'\x00' * (24 - len(_g46l_stem))
 class TestMazdaEpsSwap:
   """A 2022+ CX-5 EPS swapped into an older Mazda brings the EPS-derived behavior with it.
 
-  Pre-2022 Mazdas are dashcam only because their EPS locks steering out after ~5 s hands-off
-  and below 45 kph. That lockout lives in the EPS, so the swap lifts it. Everything keyed on
-  the radar, camera or vehicle dynamics must stay keyed on the model.
+  An older Mazda EPS locks steering out after ~5 s hands-off and below 45 kph. That lockout
+  lives in the EPS, so the swap lifts it. Everything keyed on the radar, camera or vehicle
+  dynamics must stay keyed on the model.
   """
 
-  def test_stock_older_mazda_is_dashcam_only(self):
+  def test_stock_older_mazda_steers_above_its_floor(self):
     CP = car_params(CAR.MAZDA_CX5, car_fw=eps_fw(STOCK_CX5_EPS_FW))
-    assert CP.dashcamOnly
+    assert not CP.dashcamOnly
     assert CP.minSteerSpeed == pytest.approx(MIN_STEER_SPEED_STOCK_EPS, abs=5e-8)
     assert CP.steerActuatorDelay == pytest.approx(0.14, abs=5e-8)
 
-  def test_swapped_eps_lifts_dashcam_and_the_speed_floor(self):
+  def test_swapped_eps_lifts_the_speed_floor(self):
     CP = car_params(CAR.MAZDA_CX5, car_fw=eps_fw(SWAPPED_EPS_FW))
     assert not CP.dashcamOnly
     assert CP.minSteerSpeed == 0
@@ -102,6 +103,12 @@ class TestMazdaEpsSwap:
     assert cx9_2021.minSteerSpeed == pytest.approx(MIN_STEER_SPEED_STOCK_EPS, abs=5e-8)
     assert cx9_2021.steerActuatorDelay == pytest.approx(0.14, abs=5e-8)
     assert not cx9_2021.alphaLongitudinalAvailable
+
+  @pytest.mark.parametrize("candidate", list(CAR))
+  def test_admission_follows_the_platform(self, candidate):
+    # every body drives on its own EPS except one never seen steering stock, which a swap admits
+    assert car_params(candidate).dashcamOnly == (candidate in SWAP_ONLY_PLATFORMS)
+    assert not car_params(candidate, car_fw=eps_fw(SWAPPED_EPS_FW)).dashcamOnly
 
   @pytest.mark.parametrize("candidate", list(CAR))
   @pytest.mark.parametrize("swapped", [False, True], ids=["stock", "swapped_eps"])
@@ -209,9 +216,10 @@ class TestMazdaLegacyFwEps:
     assert CP.minSteerSpeed == pytest.approx(MIN_STEER_SPEED_STOCK_EPS, abs=5e-8)
     assert not CP.dashcamOnly
 
-  def test_legacy_firmware_in_an_older_body_stays_dashcam(self):
+  def test_legacy_firmware_in_an_older_body_keeps_the_floor(self):
     CP = car_params(CAR.MAZDA_CX5, car_fw=eps_fw(LEGACY_FW_EPS))
-    assert CP.dashcamOnly
+    assert not CP.dashcamOnly
+    assert CP.minSteerSpeed == pytest.approx(MIN_STEER_SPEED_STOCK_EPS, abs=5e-8)
     assert CP.flags & MazdaFlags.LEGACY_FW_EPS
 
   @pytest.mark.parametrize("candidate, car_fw", [
@@ -231,8 +239,7 @@ class TestMazdaLegacyFwEps:
     assert CP.safetyConfigs[0].safetyParam & MazdaSafetyFlags.LEGACY_FW_EPS.value
     assert CP.minSteerSpeed == pytest.approx(MIN_STEER_SPEED_STOCK_EPS, abs=5e-8)
     assert CP.steerActuatorDelay == pytest.approx(0.14, abs=5e-8)
-    # support itself is still the platform's call: only the CX-9 2021 drives among these
-    assert CP.dashcamOnly == (candidate != CAR.MAZDA_CX9_2021)
+    assert not CP.dashcamOnly
 
   def test_no_mazda_is_left_on_the_upstream_envelope(self):
     for candidate in CAR:
