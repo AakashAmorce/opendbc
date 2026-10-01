@@ -21,6 +21,13 @@ MAIN_CAN_WITNESSES = {"PEDALS": ("ACC_ACTIVE", round(0.2 / DT_CTRL)), "ENGINE_DA
 HOLD_STATE_HOLDING = 3
 
 
+def body_holds(pt) -> bool:
+  """Whether the body ECU owns the standstill hold, from the powertrain parser's values. The body
+  takes the hold whether or not Auto Hold is on, and EPB.HOLD_STATE is what stock MRCC relaxes on.
+  GEAR.BRAKE_HOLD joins it only with Auto Hold armed; on its own it still means the car is held."""
+  return pt["EPB"]["HOLD_STATE"] == HOLD_STATE_HOLDING or pt["GEAR"]["BRAKE_HOLD"] == 1
+
+
 class CarState(CarStateBase, CarStateExt):
   def __init__(self, CP, CP_SP):
     CarStateBase.__init__(self, CP, CP_SP)
@@ -186,10 +193,7 @@ class CarState(CarStateBase, CarStateExt):
 
     can_gear = int(cp.vl["GEAR"]["GEAR"])
     ret.gearShifter = self.parse_gear_shifter(self.shifter_values.get(can_gear, None))
-    # The body takes the hold whether or not Auto Hold is on, and EPB.HOLD_STATE is what stock
-    # MRCC relaxes on. GEAR.BRAKE_HOLD joins it only with Auto Hold armed; on its own it still
-    # means the car is held.
-    self.body_hold = cp.vl["EPB"]["HOLD_STATE"] == HOLD_STATE_HOLDING or cp.vl["GEAR"]["BRAKE_HOLD"] == 1
+    self.body_hold = body_holds(cp.vl)
 
     ret.genericToggle = bool(cp.vl["BLINK_INFO"]["HIGH_BEAMS"])
     ret.leftBlindspot = cp.vl["BSM"]["LEFT_BS_STATUS"] != 0
