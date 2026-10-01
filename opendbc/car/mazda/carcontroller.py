@@ -373,7 +373,7 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     button = self.dar.update(engaged=CS.out.cruiseState.enabled and CC.enabled, standstill=CS.out.standstill,
                              v_ego=CS.out.vEgo, setting=CS.distance_setting,
                              lead_present=CC_SP.leadOne.status, lead_d=CC_SP.leadOne.dRel,
-                             driver_distance=bool(CS.distance_button or CS.distance_more_button),
+                             driver_less=bool(CS.distance_button), driver_more=bool(CS.distance_more_button),
                              resume_requested=self.resume_requested(CC), can_tap=can_tap)
     if button is None:
       return []

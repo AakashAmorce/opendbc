@@ -18,9 +18,10 @@ from opendbc.car.mazda import mazdacan
 from opendbc.car.mazda.carcontroller import CarController
 from opendbc.car.mazda.interface import CarInterface
 from opendbc.car.mazda.dynamic_auto_resume import (CONFIRM_FRAMES, HOLD_ARM_FRAMES, LATE_TAP_FRAMES, MAX_DRIVE_MISSES,
-                                                    MAX_MISSES, MIN_SHORT_MOVING_FRAMES, NO_LEAD_FRAMES, RESTORE_SPEED,
-                                                    RESTORE_TIMEOUT_FRAMES, SHORTEST_SETTING, TAP_PERIOD, DarState,
-                                                    DynamicAutoResume, desired_gap)
+                                                    MAX_MISSES, MIN_SHORT_MOVING_FRAMES, NO_LEAD_FRAMES,
+                                                    QUICK_RESTORE_ATTEMPTS, RESTORE_RETRY_SLOW_FRAMES, RESTORE_SPEED,
+                                                    RESTORE_TIMEOUT_FRAMES, SHORTEST_SETTING, TAP_PERIOD, WATCH_FRAMES,
+                                                    DarState, DynamicAutoResume, desired_gap)
 from opendbc.car.mazda.tests.conftest import (CRZ_BTNS, DBC_NAME, SendButtonState, car_interface, car_params, car_params_sp,
                                               frames, mazda_car_state, packer, parse_frame, step)
 from opendbc.car.mazda.values import CAR, Buttons
@@ -63,14 +64,14 @@ class Rig:
     self.frame = 0
     self.taps: list[tuple[int, int, bool]] = []  # (frame, button, standstill)
 
-  def run(self, n=1, *, engaged=True, standstill=True, v_ego=0., lead_present=True, lead_d=6., driver_distance=False,
-          resume_requested=False, can_tap=True, setting=None):
+  def run(self, n=1, *, engaged=True, standstill=True, v_ego=0., lead_present=True, lead_d=6., driver_less=False,
+          driver_more=False, resume_requested=False, can_tap=True, setting=None):
     for _ in range(n):
       self.mrcc.tick(self.frame)
       button = self.dar.update(engaged=engaged, standstill=standstill, v_ego=v_ego,
                                setting=self.mrcc.setting if setting is None else setting,
-                               lead_present=lead_present, lead_d=lead_d, driver_distance=driver_distance,
-                               resume_requested=resume_requested, can_tap=can_tap)
+                               lead_present=lead_present, lead_d=lead_d, driver_less=driver_less,
+                               driver_more=driver_more, resume_requested=resume_requested, can_tap=can_tap)
       if button is not None:
         self.taps.append((self.frame, button, standstill))
         self.mrcc.tap(self.frame, button)
@@ -121,7 +122,7 @@ class TestShortening:
 
   def test_a_driver_press_at_the_stop_keeps_it_from_arming(self):
     rig = Rig().run(100)
-    rig.run(1, driver_distance=True)
+    rig.run(1, driver_more=True)
     rig.held()
     assert rig.dar.state == DarState.IDLE and not rig.taps
 
@@ -205,14 +206,36 @@ class TestRestore:
     rig.pull_away(SETTLE, v_ego=RESTORE_SPEED)
     assert rig.mrcc.setting == 2 and rig.dar.state == DarState.IDLE
 
-  def test_a_deaf_ecu_keeps_the_restore_outstanding_within_the_drive_budget(self):
+  def test_a_deaf_ecu_keeps_the_restore_outstanding_at_a_slow_rate(self):
     rig = self.shortened()
     rig.mrcc.accept = False
-    rig.pull_away(int(400 / DT_CTRL), v_ego=RESTORE_SPEED)
-    assert rig.dar.disabled, "gave up for the drive after the miss budget"
+    secs = 400
+    rig.pull_away(int(secs / DT_CTRL), v_ego=RESTORE_SPEED)
+    assert rig.dar.shortening_disabled, "a drive where most taps miss stops shortening"
+    assert rig.dar.drive_misses >= MAX_DRIVE_MISSES
     assert rig.dar.state != DarState.IDLE, "a restore that never landed must not read as done"
-    assert len(rig.taps) <= MAX_DRIVE_MISSES
+    slow_attempts = secs / (RESTORE_RETRY_SLOW_FRAMES * DT_CTRL) + 1
+    assert len(rig.taps) <= MAX_MISSES * (QUICK_RESTORE_ATTEMPTS + slow_attempts)
     assert set(rig.buttons()) == {MORE}
+
+  def test_an_exhausted_budget_still_restores(self):
+    rig = self.shortened()
+    rig.dar.shortening_disabled = True
+    rig.pull_away(SETTLE, v_ego=RESTORE_SPEED)
+    assert rig.mrcc.setting == 2 and rig.dar.state == DarState.IDLE
+    rig.run(10).held()
+    assert rig.dar.state == DarState.IDLE and rig.buttons() == [MORE, MORE], "shortened again after the budget ran out"
+
+  def test_a_few_dropped_presses_never_trip_the_budget(self):
+    rng = random.Random(7)
+    rig = Rig(setting=2, drop=0.07, rng=rng)
+    for _ in range(150):
+      rig.held(HOLD_ARM_FRAMES + 400)
+      rig.pull_away(MIN_SHORT_MOVING_FRAMES + LATE_TAP_FRAMES + 200, v_ego=RESTORE_SPEED)
+    assert not rig.dar.shortening_disabled
+    assert rig.dar.drive_misses > 0, "the rig should have dropped some presses"
+    rig.pull_away(int(120 / DT_CTRL), v_ego=RESTORE_SPEED)
+    assert rig.dar.state == DarState.IDLE and rig.mrcc.setting <= 2
 
 
 class TestUnreliableEcu:
@@ -238,6 +261,30 @@ class TestUnreliableEcu:
     assert rig.dar.state == DarState.IDLE and rig.mrcc.setting <= 2
     rig.assert_never_shorter_while_moving()
 
+  def test_a_quick_pull_away_does_not_outrun_a_late_press(self):
+    # 3.5 s latency, the lead leaves right after the first tap, and there is no lead to wait on.
+    for user in (1, 2, 3):
+      rig = Rig(setting=user, latency=350).run(HOLD_ARM_FRAMES)
+      while not rig.taps:
+        rig.run(1)
+      rig.run(30, resume_requested=True)
+      rig.pull_away(int(120 / DT_CTRL), v_ego=5., lead_present=False)
+      assert rig.dar.state == DarState.IDLE and rig.mrcc.setting <= user, (user, rig.mrcc.setting)
+      rig.assert_never_shorter_while_moving()
+
+  def test_a_press_landing_after_the_episode_is_undone(self):
+    # 7 s latency, past the quiet window: the episode ends, then the press lands and is caught.
+    rig = Rig(setting=2, latency=700).run(HOLD_ARM_FRAMES)
+    while not rig.taps:
+      rig.run(1)
+    rig.run(30, resume_requested=True)
+    rig.pull_away(LATE_TAP_FRAMES + 60, v_ego=5., lead_present=False)
+    assert rig.dar.state == DarState.IDLE and rig.dar.watch_frames > 0
+    rig.pull_away(int(180 / DT_CTRL), v_ego=5., lead_present=False)
+    assert rig.dar.state == DarState.IDLE and rig.mrcc.setting <= 2
+    assert WATCH_FRAMES > 0
+    rig.assert_never_shorter_while_moving()
+
   def test_a_double_stepping_ecu_cannot_ping_pong(self):
     rig = Rig(setting=3, step=2).held()
     rig.pull_away(SETTLE, v_ego=RESTORE_SPEED)
@@ -250,32 +297,56 @@ class TestUnreliableEcu:
   def test_randomized_invariants(self, seed):
     rng = random.Random(seed)
     user = rng.choice([1, 2, 3])
-    rig = Rig(setting=user, latency=lambda: rng.randint(1, 250), drop=rng.choice([0., 0.2, 0.5]), rng=rng)
+    rig = Rig(setting=user, latency=lambda: rng.randint(1, 450), drop=rng.choice([0., 0.2, 0.5]), rng=rng)
     for _ in range(6):  # six stops in traffic
       rig.held(HOLD_ARM_FRAMES + rng.randint(0, 800), engaged=rng.random() > 0.05)
       rig.pull_away(rng.randint(50, 1500), v_ego=rng.uniform(0.5, 12.), lead_d=rng.uniform(3., 60.),
                     lead_present=rng.random() > 0.1)
-    rig.pull_away(int(300 / DT_CTRL), v_ego=RESTORE_SPEED)
+    rig.pull_away(int(600 / DT_CTRL), v_ego=RESTORE_SPEED)
     rig.assert_never_shorter_while_moving()
-    assert rig.dar.drive_misses <= MAX_DRIVE_MISSES
-    if not rig.dar.disabled:
-      assert rig.dar.state == DarState.IDLE and rig.mrcc.setting <= user, (seed, rig.mrcc.setting, user)
+    assert rig.dar.state == DarState.IDLE and rig.mrcc.setting <= user, (seed, rig.mrcc.setting, user)
 
 
 class TestDriverWins:
 
   def test_a_press_ends_the_episode_and_keeps_the_drivers_choice(self):
     rig = TestRestore().shortened()
-    rig.mrcc.setting = 3  # the driver's own press, one step longer
-    rig.run(1, driver_distance=True)
+    rig.run(LATE_TAP_FRAMES)  # no tap of ours in flight
+    rig.run(1, driver_more=True)
+    rig.mrcc.setting = 3  # the driver's press lands, one step longer
     assert rig.dar.state == DarState.IDLE
     rig.pull_away(int(20 / DT_CTRL), v_ego=RESTORE_SPEED)
     assert not rig.taps and rig.mrcc.setting == 3
 
+  def test_a_press_soon_after_our_taps_keeps_the_drivers_choice(self):
+    rig = TestRestore().shortened()  # our last LESS was recent
+    rig.run(1, driver_more=True)
+    rig.mrcc.setting = 3
+    assert rig.dar.state == DarState.GUARD
+    rig.pull_away(int(20 / DT_CTRL), v_ego=RESTORE_SPEED)
+    assert rig.dar.state == DarState.IDLE and not rig.taps and rig.mrcc.setting == 3
+
+  def test_our_shorter_tap_landing_on_top_of_the_drivers_press_is_undone(self):
+    # 0.8 s latency, presses applied in order. The dash reads 3 with our second shorter tap still in
+    # flight; the driver presses longer once, meaning 2. Ours lands (4), then theirs (3): one short.
+    rig = Rig(setting=2, latency=80).run(HOLD_ARM_FRAMES)
+    while len(rig.taps) < 2:
+      rig.run(1)
+    second_due = rig.taps[1][0] + 80
+    rig.run(10)
+    assert rig.mrcc.setting == 3 and rig.dar.pending_tap == 1
+    rig.run(1, driver_more=True)
+    rig.mrcc.queue.append((second_due + 1, -1))  # the driver's press, applied after ours
+    assert rig.dar.state == DarState.GUARD
+    rig.pull_away(int(30 / DT_CTRL), v_ego=RESTORE_SPEED)
+    assert rig.mrcc.setting == 2, "left shorter than the driver chose"
+    assert rig.dar.state == DarState.IDLE and rig.buttons()[2:] == [MORE]
+    rig.assert_never_shorter_while_moving()
+
   def test_one_episode_per_stop(self):
     rig = Rig().run(HOLD_ARM_FRAMES)
     assert rig.dar.state == DarState.SHORTENING and not rig.taps
-    rig.run(1, driver_distance=True)
+    rig.run(1, driver_more=True)
     rig.held()
     assert rig.dar.state == DarState.IDLE and not rig.taps, "re-armed against the driver at the same stop"
     rig.run(10, engaged=False)  # a brake tap and re-engage at the same stop
@@ -298,7 +369,7 @@ class TestShadow:
   def test_a_real_press_still_ends_it(self):
     rig = Rig(shadow=True).held()
     rig.mrcc.setting = 1
-    rig.run(1, driver_distance=True)
+    rig.run(1, driver_more=True)
     assert rig.dar.state == DarState.IDLE and rig.dar.virtual_steps == 0
 
   def test_an_unreadable_setting_never_reads_as_restored(self):
