@@ -5,8 +5,11 @@ This file is part of zoompilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 
 Dynamic Auto Resume: the shorten/restore state machine against a simulated MRCC distance
-setting, its distance taps on the wire, the DISTANCE_SETTING read, and the flags that turn it on.
+setting (prompt, late, deaf, double-stepping and lossy ECUs), its distance taps on the wire, the
+DISTANCE_SETTING read, the flags that turn it on, and the controller wiring.
 """
+import random
+
 import pytest
 
 from opendbc.can import CANPacker
@@ -14,10 +17,10 @@ from opendbc.car import Bus, DT_CTRL
 from opendbc.car.mazda import mazdacan
 from opendbc.car.mazda.carcontroller import CarController
 from opendbc.car.mazda.interface import CarInterface
-from opendbc.car.mazda.dynamic_auto_resume import (CONFIRM_FRAMES, HOLD_ARM_FRAMES, MAX_MISSES, MAX_RESTORE_ATTEMPTS,
-                                                    MIN_SHORT_MOVING_FRAMES, NO_LEAD_FRAMES, RESTORE_RETRY_FRAMES,
-                                                    RESTORE_SPEED, RESTORE_TIMEOUT_FRAMES, SHORTEST_SETTING, TAP_PERIOD,
-                                                    DarState, DynamicAutoResume, desired_gap)
+from opendbc.car.mazda.dynamic_auto_resume import (CONFIRM_FRAMES, HOLD_ARM_FRAMES, LATE_TAP_FRAMES, MAX_DRIVE_MISSES,
+                                                    MAX_MISSES, MIN_SHORT_MOVING_FRAMES, NO_LEAD_FRAMES, RESTORE_SPEED,
+                                                    RESTORE_TIMEOUT_FRAMES, SHORTEST_SETTING, TAP_PERIOD, DarState,
+                                                    DynamicAutoResume, desired_gap)
 from opendbc.car.mazda.tests.conftest import (CRZ_BTNS, DBC_NAME, SendButtonState, car_interface, car_params, car_params_sp,
                                               frames, mazda_car_state, packer, parse_frame, step)
 from opendbc.car.mazda.values import CAR, Buttons
@@ -26,21 +29,26 @@ from opendbc.sunnypilot.car.mazda.values import MazdaFlagsSP
 
 TAP_FRAMES = int(TAP_PERIOD / DT_CTRL) + 1
 LESS, MORE = Buttons.DISTANCE_LESS, Buttons.DISTANCE_MORE
+SETTLE = LATE_TAP_FRAMES + 300  # long enough for any episode in these rigs to wind up
 
 
 class Mrcc:
-  """The distance setting as the radar keeps it: a tap moves it one step, clamped to 1..4,
-  `latency` frames later, unless the ECU is ignoring taps."""
+  """The distance setting as the radar keeps it: a tap moves it `step` steps, clamped to 1..4,
+  `latency` frames later, unless the ECU ignores it (deaf, or a random drop)."""
 
-  def __init__(self, setting=2, latency=3, accept=True):
+  def __init__(self, setting=2, latency=3, accept=True, step=1, drop=0., rng=None):
     self.setting = setting
     self.latency = latency
     self.accept = accept
+    self.step = step
+    self.drop = drop
+    self.rng = rng or random.Random(0)
     self.queue: list[tuple[int, int]] = []
 
   def tap(self, frame, button):
-    if self.accept:
-      self.queue.append((frame + self.latency, 1 if button == LESS else -1))
+    if self.accept and self.rng.random() >= self.drop:
+      latency = self.latency() if callable(self.latency) else self.latency
+      self.queue.append((frame + latency, self.step if button == LESS else -self.step))
 
   def tick(self, frame):
     for item in [q for q in self.queue if q[0] <= frame]:
@@ -53,7 +61,7 @@ class Rig:
     self.dar = DynamicAutoResume(shadow=shadow)
     self.mrcc = Mrcc(**mrcc_kwargs)
     self.frame = 0
-    self.taps: list[tuple[int, int]] = []  # (frame, button)
+    self.taps: list[tuple[int, int, bool]] = []  # (frame, button, standstill)
 
   def run(self, n=1, *, engaged=True, standstill=True, v_ego=0., lead_present=True, lead_d=6., driver_distance=False,
           resume_requested=False, can_tap=True, setting=None):
@@ -64,20 +72,23 @@ class Rig:
                                lead_present=lead_present, lead_d=lead_d, driver_distance=driver_distance,
                                resume_requested=resume_requested, can_tap=can_tap)
       if button is not None:
-        self.taps.append((self.frame, button))
+        self.taps.append((self.frame, button, standstill))
         self.mrcc.tap(self.frame, button)
       self.frame += 1
     return self
 
   def buttons(self):
-    return [b for _, b in self.taps]
+    return [b for _, b, _ in self.taps]
 
-  def held(self, n=HOLD_ARM_FRAMES + 300, **kwargs):
+  def held(self, n=HOLD_ARM_FRAMES + 600, **kwargs):
     """Stopped in HOLD long enough to arm and finish shortening."""
     return self.run(n, **kwargs)
 
   def pull_away(self, n, v_ego=3., lead_d=6., **kwargs):
     return self.run(n, standstill=False, v_ego=v_ego, lead_d=lead_d, **kwargs)
+
+  def assert_never_shorter_while_moving(self):
+    assert not [t for t in self.taps if t[1] == LESS and not t[2]], "asked for a shorter gap while moving"
 
 
 class TestShortening:
@@ -108,6 +119,12 @@ class TestShortening:
     rig = Rig().run(HOLD_ARM_FRAMES + 200, setting=0)
     assert not rig.taps
 
+  def test_a_driver_press_at_the_stop_keeps_it_from_arming(self):
+    rig = Rig().run(100)
+    rig.run(1, driver_distance=True)
+    rig.held()
+    assert rig.dar.state == DarState.IDLE and not rig.taps
+
 
 class TestResumeFirst:
 
@@ -134,8 +151,9 @@ class TestResumeFirst:
     assert rig.dar.state == DarState.SHORT
     rig.run(30, resume_requested=True)
     assert rig.mrcc.setting == 3
-    rig.pull_away(int(1.5 / DT_CTRL), v_ego=RESTORE_SPEED)
+    rig.pull_away(SETTLE, v_ego=RESTORE_SPEED)
     assert rig.mrcc.setting == 2 and rig.dar.state == DarState.IDLE
+    rig.assert_never_shorter_while_moving()
 
 
 class TestRestore:
@@ -151,7 +169,7 @@ class TestRestore:
     v = 4.
     rig.pull_away(MIN_SHORT_MOVING_FRAMES + 100, v_ego=v, lead_d=desired_gap(2, v) - 1.)
     assert rig.dar.state == DarState.SHORT and not rig.taps
-    rig.pull_away(150, v_ego=v, lead_d=desired_gap(2, v) + 1.)
+    rig.pull_away(SETTLE, v_ego=v, lead_d=desired_gap(2, v) + 1.)
     assert rig.buttons() == [MORE, MORE]
     assert rig.mrcc.setting == 2 and rig.dar.state == DarState.IDLE
 
@@ -177,23 +195,71 @@ class TestRestore:
     else:
       rig.pull_away(RESTORE_TIMEOUT_FRAMES, lead_d=0.)
     assert rig.dar.state == DarState.RESTORING
-    rig.pull_away(200, v_ego=RESTORE_SPEED)
+    rig.pull_away(SETTLE, v_ego=RESTORE_SPEED)
     assert rig.mrcc.setting == 2 and rig.dar.state == DarState.IDLE
 
   def test_disengaged_while_short_restores_on_the_next_engagement(self):
     rig = self.shortened()
     rig.run(300, engaged=False)
     assert rig.dar.state == DarState.RESTORE_PENDING and not rig.taps, "the panda refuses buttons while disengaged"
-    rig.pull_away(200, v_ego=RESTORE_SPEED)
+    rig.pull_away(SETTLE, v_ego=RESTORE_SPEED)
     assert rig.mrcc.setting == 2 and rig.dar.state == DarState.IDLE
 
-  def test_a_deaf_ecu_gets_a_bounded_number_of_tries(self):
+  def test_a_deaf_ecu_keeps_the_restore_outstanding_within_the_drive_budget(self):
     rig = self.shortened()
     rig.mrcc.accept = False
-    rig.pull_away(MAX_RESTORE_ATTEMPTS * (MAX_MISSES * (CONFIRM_FRAMES + TAP_FRAMES) + RESTORE_RETRY_FRAMES) + 500,
-                  v_ego=RESTORE_SPEED)
-    assert rig.dar.state == DarState.IDLE, "gave up and logged restore_failed"
-    assert len(rig.taps) == MAX_RESTORE_ATTEMPTS * MAX_MISSES
+    rig.pull_away(int(400 / DT_CTRL), v_ego=RESTORE_SPEED)
+    assert rig.dar.disabled, "gave up for the drive after the miss budget"
+    assert rig.dar.state != DarState.IDLE, "a restore that never landed must not read as done"
+    assert len(rig.taps) <= MAX_DRIVE_MISSES
+    assert set(rig.buttons()) == {MORE}
+
+
+class TestUnreliableEcu:
+  """The ECU may apply a press late, apply it twice, or drop it. The setting must never end an
+  episode shorter than the driver's, and the way back never asks for a shorter gap."""
+
+  def test_presses_applied_after_the_confirm_window_are_caught(self):
+    # Every press lands 2 s late: all three shortening taps read as missed, then land anyway.
+    rig = Rig(setting=2, latency=200).held()
+    assert rig.dar.state == DarState.SHORT, "taps went out, so the episode must stay open"
+    rig.run(300)
+    assert rig.mrcc.setting == SHORTEST_SETTING
+    rig.pull_away(int(60 / DT_CTRL), v_ego=RESTORE_SPEED)
+    assert rig.dar.state == DarState.IDLE and rig.mrcc.setting <= 2
+    rig.assert_never_shorter_while_moving()
+
+  def test_presses_applied_after_giving_up_in_hold_are_undone(self):
+    rig = Rig(setting=2, latency=500).held()
+    assert rig.dar.hold_taps_rejected and rig.dar.state == DarState.SHORT
+    rig.run(600)
+    assert rig.mrcc.setting == SHORTEST_SETTING, "the late presses landed"
+    rig.pull_away(int(120 / DT_CTRL), v_ego=RESTORE_SPEED)
+    assert rig.dar.state == DarState.IDLE and rig.mrcc.setting <= 2
+    rig.assert_never_shorter_while_moving()
+
+  def test_a_double_stepping_ecu_cannot_ping_pong(self):
+    rig = Rig(setting=3, step=2).held()
+    rig.pull_away(SETTLE, v_ego=RESTORE_SPEED)
+    assert rig.dar.state == DarState.IDLE
+    assert rig.mrcc.setting <= 3, "ended shorter than the driver's setting"
+    assert len(rig.taps) <= 3
+    rig.assert_never_shorter_while_moving()
+
+  @pytest.mark.parametrize("seed", range(25))
+  def test_randomized_invariants(self, seed):
+    rng = random.Random(seed)
+    user = rng.choice([1, 2, 3])
+    rig = Rig(setting=user, latency=lambda: rng.randint(1, 250), drop=rng.choice([0., 0.2, 0.5]), rng=rng)
+    for _ in range(6):  # six stops in traffic
+      rig.held(HOLD_ARM_FRAMES + rng.randint(0, 800), engaged=rng.random() > 0.05)
+      rig.pull_away(rng.randint(50, 1500), v_ego=rng.uniform(0.5, 12.), lead_d=rng.uniform(3., 60.),
+                    lead_present=rng.random() > 0.1)
+    rig.pull_away(int(300 / DT_CTRL), v_ego=RESTORE_SPEED)
+    rig.assert_never_shorter_while_moving()
+    assert rig.dar.drive_misses <= MAX_DRIVE_MISSES
+    if not rig.dar.disabled:
+      assert rig.dar.state == DarState.IDLE and rig.mrcc.setting <= user, (seed, rig.mrcc.setting, user)
 
 
 class TestDriverWins:
@@ -212,20 +278,12 @@ class TestDriverWins:
     rig.run(1, driver_distance=True)
     rig.held()
     assert rig.dar.state == DarState.IDLE and not rig.taps, "re-armed against the driver at the same stop"
+    rig.run(10, engaged=False)  # a brake tap and re-engage at the same stop
+    rig.held()
+    assert rig.dar.state == DarState.IDLE and not rig.taps, "re-armed after a re-engage at the same stop"
     rig.pull_away(10)
     rig.held()
     assert rig.dar.state == DarState.SHORT, "a new stop arms again"
-
-
-class TestIgnoredInHold:
-
-  def test_ecu_ignoring_taps_at_a_stop_disables_it_for_the_drive(self):
-    rig = Rig(accept=False).held()
-    assert rig.dar.hold_taps_rejected and rig.dar.state == DarState.IDLE
-    assert len(rig.taps) == MAX_MISSES
-    rig.pull_away(10)
-    rig.held()
-    assert len(rig.taps) == MAX_MISSES, "kept tapping a deaf ECU at every stop"
 
 
 class TestShadow:
@@ -234,8 +292,7 @@ class TestShadow:
     rig = Rig(shadow=True, setting=2).held()
     assert not rig.taps and rig.mrcc.setting == 2
     assert rig.dar.state == DarState.SHORT and rig.dar.virtual_steps == 2
-    assert not rig.dar.owns_buttons, "shadow must not hold ICBM off"
-    rig.pull_away(200, v_ego=RESTORE_SPEED)
+    rig.pull_away(SETTLE, v_ego=RESTORE_SPEED)
     assert rig.dar.state == DarState.IDLE and rig.dar.virtual_steps == 0 and not rig.taps
 
   def test_a_real_press_still_ends_it(self):
@@ -244,10 +301,20 @@ class TestShadow:
     rig.run(1, driver_distance=True)
     assert rig.dar.state == DarState.IDLE and rig.dar.virtual_steps == 0
 
+  def test_an_unreadable_setting_never_reads_as_restored(self):
+    # MRCC off can read DISTANCE_SETTING 0; 0 plus the virtual steps must not pass for the driver's.
+    rig = Rig(shadow=True, setting=2).held()
+    rig.run(SETTLE, engaged=False, standstill=False, v_ego=5., setting=0)
+    assert rig.dar.state == DarState.RESTORE_PENDING
+
 
 def test_desired_gap_grows_with_speed_and_setting():
   assert desired_gap(1, 10.) > desired_gap(4, 10.) > desired_gap(4, 0.) > 0.
   assert desired_gap(0, 10.) == desired_gap(1, 10.), "an unknown setting restores late, not early"
+
+
+def test_confirm_window_outlasts_the_tap_period():
+  assert CONFIRM_FRAMES * DT_CTRL > TAP_PERIOD and LATE_TAP_FRAMES > CONFIRM_FRAMES and MAX_MISSES >= 2
 
 
 # On the wire
@@ -318,16 +385,33 @@ def dar_controller(flag, candidate=CAR.MAZDA_CX5_2022, alpha_long=False):
   return CarController({Bus.pt: DBC_NAME}, CP, CP_SP)
 
 
-def hold_frames(cc, cs, n, **kwargs):
-  """Stock MRCC engaged and holding at a stop, openpilot enabled but not resuming."""
+def drive(cc, cs, n, **kwargs):
+  """Stock MRCC engaged, openpilot enabled; returns [(frame, CRZ_BTNS payload)] sent."""
+  kwargs = {"long_active": False, "enabled": True, "accel": 0., "standstill": True, "cruise_engaged": True,
+            "distance_setting": 2, **kwargs}
   sent = []
   for _ in range(n):
-    _, sends = step(cc, cs, long_active=False, enabled=True, accel=0., standstill=True, cruise_engaged=True, **kwargs)
-    sent += frames(sends, CRZ_BTNS)
+    f = cc.frame
+    _, sends = step(cc, cs, **kwargs)
+    sent += [(f, d) for d in frames(sends, CRZ_BTNS)]
   return sent
 
 
+def dists(sent):
+  out = []
+  for f, d in sent:
+    v = parse_frame(CRZ_BTNS, d)
+    if v["DISTANCE_LESS"] or v["DISTANCE_MORE"]:
+      out.append((f, LESS if v["DISTANCE_LESS"] else MORE))
+  return out
+
+
 class TestController:
+
+  @pytest.fixture
+  def dar(self):
+    cc = dar_controller(MazdaFlagsSP.DYNAMIC_AUTO_RESUME)
+    return cc, mazda_car_state(cc.CP, cc.CP_SP)
 
   def test_off_without_the_flag_or_under_alpha_long(self):
     assert dar_controller(0).dar is None
@@ -337,41 +421,80 @@ class TestController:
   def test_a_hold_puts_a_distance_less_tap_on_the_bus(self, candidate):
     cc = dar_controller(MazdaFlagsSP.DYNAMIC_AUTO_RESUME, candidate=candidate)
     cs = mazda_car_state(cc.CP, cc.CP_SP)
-    sent = hold_frames(cc, cs, HOLD_ARM_FRAMES + TAP_FRAMES + 5, distance_setting=2)
+    sent = drive(cc, cs, HOLD_ARM_FRAMES + TAP_FRAMES + 5)
+    assert [b for _, b in dists(sent)] == [LESS]
     assert len(sent) == 1
-    v = parse_frame(CRZ_BTNS, sent[0])
-    assert v["DISTANCE_LESS"] == 1 and v["DISTANCE_MORE"] == 0
 
   def test_shadow_sends_nothing(self):
     cc = dar_controller(MazdaFlagsSP.DYNAMIC_AUTO_RESUME_SHADOW)
     cs = mazda_car_state(cc.CP, cc.CP_SP)
-    assert not hold_frames(cc, cs, HOLD_ARM_FRAMES + 300, distance_setting=2)
+    assert not drive(cc, cs, HOLD_ARM_FRAMES + 300)
     assert cc.dar.state == DarState.SHORT
 
-  def test_no_tap_while_a_physical_button_is_down(self):
-    cc = dar_controller(MazdaFlagsSP.DYNAMIC_AUTO_RESUME)
-    cs = mazda_car_state(cc.CP, cc.CP_SP)
-    assert not hold_frames(cc, cs, HOLD_ARM_FRAMES + 300, distance_setting=2, accel_button=1)
+  def test_no_tap_while_a_physical_button_is_down(self, dar):
+    cc, cs = dar
+    assert not drive(cc, cs, HOLD_ARM_FRAMES + 300, accel_button=1)
+    assert cc.dar.state == DarState.SHORTENING, "armed, but held its taps for the driver's press"
 
-  def test_icbm_waits_while_a_tap_sequence_runs(self):
-    cc = dar_controller(MazdaFlagsSP.DYNAMIC_AUTO_RESUME)
-    cs = mazda_car_state(cc.CP, cc.CP_SP)
-    before = hold_frames(cc, cs, HOLD_ARM_FRAMES, distance_setting=2, send_button=SendButtonState.increase)
-    assert any(parse_frame(CRZ_BTNS, d)["SET_P"] for d in before), "ICBM should run until the episode arms"
-    assert cc.dar.state == DarState.SHORTENING
-    during = hold_frames(cc, cs, 100, distance_setting=2, send_button=SendButtonState.increase)
-    assert cc.dar.state == DarState.SHORTENING
-    assert during, "the distance tap should still go out"
-    for dat in during:
-      v = parse_frame(CRZ_BTNS, dat)
-      assert v["SET_P"] == 0, "ICBM pressed SET+ in the middle of a distance sequence"
+  def test_not_engaged_means_no_taps(self, dar):
+    cc, cs = dar
+    assert not dists(drive(cc, cs, HOLD_ARM_FRAMES + 300, enabled=False))
+    assert cc.dar.state == DarState.IDLE
 
-  def test_not_engaged_means_no_taps(self):
-    cc = dar_controller(MazdaFlagsSP.DYNAMIC_AUTO_RESUME)
-    cs = mazda_car_state(cc.CP, cc.CP_SP)
-    sent = []
-    for _ in range(HOLD_ARM_FRAMES + 300):
-      _, sends = step(cc, cs, long_active=False, enabled=False, accel=0., standstill=True, cruise_engaged=True,
-                      distance_setting=2)
-      sent += frames(sends, CRZ_BTNS)
-    assert not any(parse_frame(CRZ_BTNS, d)["DISTANCE_LESS"] for d in sent)
+  @pytest.mark.parametrize("which", ["distance_button", "distance_more_button"])
+  def test_either_physical_distance_switch_ends_the_episode(self, dar, which):
+    cc, cs = dar
+    drive(cc, cs, HOLD_ARM_FRAMES)
+    assert cc.dar.state == DarState.SHORTENING
+    drive(cc, cs, 1, **{which: 1})
+    assert cc.dar.state == DarState.IDLE
+    assert not dists(drive(cc, cs, 600, distance_setting=3))
+
+  def test_resume_goes_out_and_no_distance_tap_rides_along(self, dar):
+    cc, cs = dar
+    drive(cc, cs, HOLD_ARM_FRAMES)
+    sent = drive(cc, cs, 200, resume=True)
+    assert sent and not dists(sent)
+    assert all(parse_frame(CRZ_BTNS, d)["RES"] for _, d in sent)
+    assert cc.dar.state == DarState.IDLE, "the untouched episode should end for the resume"
+
+  def test_a_restore_at_a_standstill_waits_out_the_res_presses(self, dar):
+    # Shortened, cruise dropped, then re-engaged at a stop while openpilot is pressing RES: the
+    # restore must not slot distance taps into the RES stream.
+    cc, cs = dar
+    drive(cc, cs, HOLD_ARM_FRAMES)
+    drive(cc, cs, 100, distance_setting=SHORTEST_SETTING)
+    drive(cc, cs, 10, cruise_engaged=False, distance_setting=SHORTEST_SETTING)
+    assert cc.dar.state == DarState.RESTORE_PENDING
+    sent = drive(cc, cs, 300, resume=True, distance_setting=SHORTEST_SETTING)
+    assert cc.dar.state == DarState.RESTORING
+    assert sent and not dists(sent)
+    assert [b for _, b in dists(drive(cc, cs, 50, distance_setting=SHORTEST_SETTING))] == [MORE]
+
+  def test_the_restore_follows_the_lead_inputs(self, dar):
+    cc, cs = dar
+    drive(cc, cs, HOLD_ARM_FRAMES)
+    drive(cc, cs, 100, distance_setting=SHORTEST_SETTING)  # the shortening landed
+    assert cc.dar.state == DarState.SHORT
+    v = 4.
+    far, close = desired_gap(2, v) + 2., desired_gap(2, v) - 2.
+    moving = {"standstill": False, "v_ego": v, "distance_setting": SHORTEST_SETTING}
+    assert not dists(drive(cc, cs, MIN_SHORT_MOVING_FRAMES + 100, lead_d_rel=close, **moving)), "restored into a short gap"
+    assert [b for _, b in dists(drive(cc, cs, 100, lead_d_rel=far, **moving))] == [MORE]
+
+  def test_a_lost_lead_restores_after_a_second(self, dar):
+    cc, cs = dar
+    drive(cc, cs, HOLD_ARM_FRAMES)
+    drive(cc, cs, 100, distance_setting=SHORTEST_SETTING)
+    moving = {"standstill": False, "v_ego": 3., "distance_setting": SHORTEST_SETTING, "lead_d_rel": 5.}
+    assert not dists(drive(cc, cs, NO_LEAD_FRAMES - 10, **moving))
+    assert not dists(drive(cc, cs, NO_LEAD_FRAMES - 10, lead_status=False, **moving))
+    assert [b for _, b in dists(drive(cc, cs, 30, lead_status=False, **moving))] == [MORE]
+
+  def test_icbm_and_distance_taps_share_the_pacing(self, dar):
+    cc, cs = dar
+    sent = drive(cc, cs, HOLD_ARM_FRAMES + 300, send_button=SendButtonState.increase)
+    assert any(parse_frame(CRZ_BTNS, d)["SET_P"] for _, d in sent), "ICBM kept running"
+    assert dists(sent), "the distance tap still went out"
+    gaps = [b[0] - a[0] for a, b in zip(sent, sent[1:], strict=False)]
+    assert all(g * DT_CTRL > TAP_PERIOD for g in gaps), "two synthesized presses inside the ECU's floor"

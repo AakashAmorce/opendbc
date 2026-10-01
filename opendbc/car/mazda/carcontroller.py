@@ -191,8 +191,7 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     # Suppress ICBM while cancel/resume is active or the MRCC cleanup owns CRZ_BTNS:
     # the wheel's press pattern owns the counter stream until release.
     icbm_suppress = (CC.cruiseControl.cancel or CC.cruiseControl.resume or CS.cancel_button == 1 or
-                     self.mrcc_undo_pending or CS.tja_button == 1 or
-                     (self.dar is not None and self.dar.owns_buttons))
+                     self.mrcc_undo_pending or CS.tja_button == 1)
     if not icbm_suppress:
       can_sends.extend(IntelligentCruiseButtonManagementInterface.update(self, CC_SP, CS, self.packer, self.frame, self.last_button_frame))
 
@@ -363,9 +362,10 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
   def update_dynamic_auto_resume(self, CC, CC_SP, CS):
     """Shorten stock MRCC's following distance through a HOLD and restore it after the pull-away
     (opendbc/car/mazda/dynamic_auto_resume.py). One discrete distance tap at a time, on the same
-    CRZ_BTNS pacing as ICBM and the TJA cleanup (last_button_frame), never while openpilot's own
-    cancel/resume or the TJA cleanup owns the counter stream or a physical button is down. ICBM
-    is held off while a tap sequence runs (icbm_suppress) and otherwise shares the pacing."""
+    CRZ_BTNS pacing as ICBM and the TJA cleanup (last_button_frame, so any two synthesized taps
+    are at least TAP_PERIOD apart), never while openpilot's own cancel/resume or the TJA cleanup
+    owns the counter stream or a physical button is down. ICBM is not held off: its taps and these
+    interleave as separate discrete presses on the shared pacing."""
     buttons_busy = (CC.cruiseControl.cancel or CC.cruiseControl.resume or self.mrcc_undo_pending or
                     CS.cancel_button or CS.resume_button or CS.accel_button or CS.decel_button or
                     CS.mrcc_button or CS.tja_button)
