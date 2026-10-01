@@ -326,21 +326,41 @@ class TestDriverWins:
     rig.pull_away(int(20 / DT_CTRL), v_ego=RESTORE_SPEED)
     assert rig.dar.state == DarState.IDLE and not rig.taps and rig.mrcc.setting == 3
 
-  def test_our_shorter_tap_landing_on_top_of_the_drivers_press_is_undone(self):
-    # 0.8 s latency, presses applied in order. The dash reads 3 with our second shorter tap still in
-    # flight; the driver presses longer once, meaning 2. Ours lands (4), then theirs (3): one short.
+  @pytest.mark.parametrize("reaction", [0, 50])
+  def test_a_step_landing_inside_the_drivers_reaction_counts_as_unseen(self, reaction):
+    # The dash read 2; our step to 3 lands, and inside their reaction time the driver presses
+    # longer, meaning 1. Counting from 3 would leave them at 2, shorter than they asked for.
     rig = Rig(setting=2, latency=80).run(HOLD_ARM_FRAMES)
-    while len(rig.taps) < 2:
+    while not rig.taps:
       rig.run(1)
-    second_due = rig.taps[1][0] + 80
-    rig.run(10)
-    assert rig.mrcc.setting == 3 and rig.dar.pending_tap == 1
+    landing = rig.taps[0][0] + 80
+    rig.run(landing - rig.frame + reaction)
     rig.run(1, driver_more=True)
-    rig.mrcc.queue.append((second_due + 1, -1))  # the driver's press, applied after ours
+    assert rig.mrcc.setting == 3, "our step should have landed by the press"
+    rig.mrcc.queue.append((rig.frame + 20, -1))  # the driver's press lands
+    assert rig.dar.state == DarState.GUARD
+    rig.pull_away(int(30 / DT_CTRL), v_ego=RESTORE_SPEED)
+    assert rig.mrcc.setting == 1 and rig.dar.state == DarState.IDLE
+    rig.assert_never_shorter_while_moving()
+
+  def test_our_shorter_tap_landing_on_top_of_the_drivers_press_is_undone(self):
+    # Presses applied in order. The dash has read 3 for well over a reaction time, with our later
+    # shorter taps still in flight; the driver presses longer once, meaning 2. Ours land (4), then
+    # theirs (3): one short of their choice unless it is undone.
+    latencies = iter([30, 300, 300] + [30] * 20)  # our restore taps register promptly
+    rig = Rig(setting=2, latency=lambda: next(latencies)).run(HOLD_ARM_FRAMES)
+    while not rig.taps:
+      rig.run(1)
+    first_landing = rig.taps[0][0] + 30
+    rig.run(first_landing - rig.frame + 150)
+    assert rig.mrcc.setting == 3 and len(rig.taps) == 3
+    last_due = max(due for due, _ in rig.mrcc.queue)
+    rig.run(1, driver_more=True)
+    rig.mrcc.queue.append((last_due + 1, -1))  # the driver's press, applied after ours
     assert rig.dar.state == DarState.GUARD
     rig.pull_away(int(30 / DT_CTRL), v_ego=RESTORE_SPEED)
     assert rig.mrcc.setting == 2, "left shorter than the driver chose"
-    assert rig.dar.state == DarState.IDLE and rig.buttons()[2:] == [MORE]
+    assert rig.dar.state == DarState.IDLE and rig.buttons()[3:] == [MORE], "one longer tap undoes the extra step"
     rig.assert_never_shorter_while_moving()
 
   def test_one_episode_per_stop(self):

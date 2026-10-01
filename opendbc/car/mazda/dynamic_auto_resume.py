@@ -64,6 +64,9 @@ LATE_TAP_FRAMES = int(6.0 / DT_CTRL)
 WATCH_FRAMES = int(15.0 / DT_CTRL)
 # After the driver's last distance press, wait this long before acting on their choice.
 DRIVER_SETTLE_FRAMES = int(1.0 / DT_CTRL)
+# A driver reacts to the dash about this late: a shorter step of ours that landed within it before
+# their press is taken as not yet seen, so their choice is counted from the reading before it.
+REACTION_FRAMES = int(1.0 / DT_CTRL)
 # Unconfirmed taps in a row before a move is abandoned (and retried later, for a restore).
 MAX_MISSES = 3
 # A drive stops shortening once it has this many unconfirmed or wrong-size steps and they are at
@@ -122,6 +125,11 @@ class DynamicAutoResume:
     self.guard_delta = 0  # their presses since: +1 shorter, -1 longer
     self.driver_less_prev = False
     self.driver_more_prev = False
+    # The last rise in the reading (only ours can rise before the driver's first press of an episode).
+    self.prev_eff = 0
+    self.prev_valid = False
+    self.frames_since_up = REACTION_FRAMES + 1
+    self.reaction_base = 0
     # One episode per stop: a stop is over only once the car has moved.
     self.stop_used = False
     # The ECU ignored every tap at a stop this drive (taps are not accepted in HOLD): stop arming.
@@ -149,6 +157,12 @@ class DynamicAutoResume:
     self.frames_since_tap += 1
     self.frames_since_less += 1
     self.watch_frames = max(self.watch_frames - 1, 0)
+    self.frames_since_up += 1
+    if valid and self.prev_valid and eff > self.prev_eff:
+      if self.frames_since_up > REACTION_FRAMES:
+        self.reaction_base = self.prev_eff
+      self.frames_since_up = 0
+    self.prev_eff, self.prev_valid = eff, valid
     less_edge = driver_less and not self.driver_less_prev
     more_edge = driver_more and not self.driver_more_prev
     self.driver_less_prev, self.driver_more_prev = driver_less, driver_more
@@ -161,8 +175,10 @@ class DynamicAutoResume:
         self.pending_tap = None
         if self.frames_since_less < LATE_TAP_FRAMES and not self.shadow:
           # A shorter tap of ours may still land on top of the driver's choice. Their choice is the
-          # reading now, before their press lands, plus their own presses.
-          self.guard_base = eff if valid else None
+          # reading they reacted to, before their press lands, plus their own presses; a step of ours
+          # that landed inside their reaction time is taken as unseen (longer is the safe side).
+          seen = self.reaction_base if self.frames_since_up <= REACTION_FRAMES else eff
+          self.guard_base = seen if valid else None
           self.guard_delta = 0
           self._enter(DarState.GUARD, "driver_override", eff)
         else:
@@ -261,8 +277,10 @@ class DynamicAutoResume:
         self._finish("driver_choice_unknown", eff, watch=False)
       else:
         # Restore to the driver's choice, longer only: anything of ours that lands on top is undone.
+        # Correct only once our in-flight taps have had their late window to land, so the restore
+        # reads the settled setting instead of racing them (and the driver's press queued behind).
         self.user_setting = min(max(self.guard_base + self.guard_delta, LONGEST_SETTING), SHORTEST_SETTING)
-        self.retry_frames = 0
+        self.retry_frames = max(LATE_TAP_FRAMES - self.frames_since_tap, 0)
         self.restore_attempts = 0
         self._enter(DarState.RESTORE_PENDING, "driver_choice", eff)
 
