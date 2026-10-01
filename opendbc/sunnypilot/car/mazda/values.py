@@ -22,3 +22,9 @@ class MazdaFlagsSP(IntFlag):
   # samples, zero residual, zoompilot/opendbc#7); NA and non-Oceania export clusters show the
   # CAN value exactly. Keyed on the Oceania WMI, so cruiseState.speedCluster is the dash number.
   OCEANIA_CLUSTER = 2
+  # Dynamic Auto Resume (the MazdaDynamicAutoResume toggle): shorten stock MRCC's following
+  # distance through a HOLD so the pull-away starts sooner, then restore it. Stock MRCC only.
+  DYNAMIC_AUTO_RESUME = 4
+  # The same logic in log-only mode (MazdaDynamicAutoResumeShadow, a developer declaration): it
+  # decides and logs every tap but sends nothing. Wins over the toggle when both are set.
+  DYNAMIC_AUTO_RESUME_SHADOW = 8

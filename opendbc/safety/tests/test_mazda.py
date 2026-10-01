@@ -163,6 +163,20 @@ class TestMazdaSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafetyTes
     self.assertTrue(self._tx(self._button_msg(cancel=True)))
     self.assertTrue(self._tx(self._button_msg(resume=True)))
 
+  def test_distance_taps_ride_the_engaged_gate(self):
+    # Dynamic Auto Resume's taps (opendbc/car/mazda/dynamic_auto_resume.py) are the exact frames
+    # the controller builds: plain wheel presses, sent while engaged and refused otherwise, like
+    # resume. Nothing in the safety mode changes for them.
+    from opendbc.can import CANPacker
+    from opendbc.car.mazda import mazdacan
+    from opendbc.car.mazda.values import Buttons
+    pk = CANPacker("mazda_2017")
+    for button in (Buttons.DISTANCE_LESS, Buttons.DISTANCE_MORE):
+      addr, dat, bus = mazdacan.create_button_cmd(pk, None, 0, button)
+      for controls_allowed in (False, True):
+        self.safety.set_controls_allowed(controls_allowed)
+        self.assertEqual(controls_allowed, self._tx(libsafety_py.make_CANPacket(addr, bus, dat)), (button, controls_allowed))
+
   def test_steer_safety_check(self):
     # the common test, except that disengaged the camera owns 0x243 (test_stock_passthrough),
     # so the zero-torque frame upstream's rule lets through is vetoed too

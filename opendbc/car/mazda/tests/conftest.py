@@ -123,12 +123,13 @@ def car_control(enabled=None, long_active=True, lat_active=False, accel=0.5, tor
   return cc.as_reader()
 
 
-def car_control_sp(handback=False, lead_d_rel=12.0, lead_v_rel=0.0, send_button=SendButtonState.none,
+def car_control_sp(handback=False, lead_d_rel=12.0, lead_v_rel=0.0, lead_status=True, send_button=SendButtonState.none,
                     mads_active=False) -> structs.CarControlSP:
   cc_sp = structs.CarControlSP()
   cc_sp.stockEcuHandBack = handback
   cc_sp.leadOne.dRel = lead_d_rel
   cc_sp.leadOne.vRel = lead_v_rel
+  cc_sp.leadOne.status = lead_status
   cc_sp.intelligentCruiseButtonManagement.sendButton = send_button
   cc_sp.mads.active = mads_active
   return cc_sp
@@ -141,7 +142,8 @@ def set_car_state(cs: CarState, out=None, *, brake_hold=False, stock_radar_alive
                   radar_bus_healthy=True, steer_undelivered=False,
                   lkas_blocked=False, lkas_effective=0, steer_first_engage_hold=False, lkas_allowed_speed=True, lkas_rejected=0,
                   lkas_fault=False, crz_btns_counter=0, stock_tja=0, hbc_request=False,
-                  cancel_button=0, accel_button=0, decel_button=0,
+                  cancel_button=0, accel_button=0, decel_button=0, resume_button=0,
+                  distance_button=0, distance_more_button=0, distance_setting=2,
                   tja_button=0, mrcc_button=0,
                   mrcc_armed_raw=False, cruise_available=None, cruise_enabled=None,
                   radar_handback_active=False, cam_laneinfo_raw=None, cam_laneinfo_live=False,
@@ -186,6 +188,10 @@ def set_car_state(cs: CarState, out=None, *, brake_hold=False, stock_radar_alive
   cs.cancel_button = cancel_button
   cs.accel_button = accel_button
   cs.decel_button = decel_button
+  cs.resume_button = resume_button
+  cs.distance_button = distance_button
+  cs.distance_more_button = distance_more_button
+  cs.distance_setting = distance_setting
   cs.tja_button = tja_button
   cs.mrcc_button = mrcc_button
   cs.mrcc_armed_raw = mrcc_armed_raw

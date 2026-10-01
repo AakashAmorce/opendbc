@@ -293,6 +293,11 @@ class Buttons:
   CANCEL = 4
   # The physical TJA button, sent only on the camera bus to switch the camera's own TJA/CTS off.
   TJA = 5
+  # The wheel's two distance switches (2017+ CX-5: one shorter, one longer). Each tap moves
+  # CRZ_CTRL.DISTANCE_SETTING one step: DISTANCE_LESS raises the raw toward 4 (1 bar, shortest),
+  # DISTANCE_MORE lowers it toward 1 (4 bars, longest). Used by Dynamic Auto Resume only.
+  DISTANCE_LESS = 6
+  DISTANCE_MORE = 7
 
 
 def platform_from_vin(vin: str) -> str | None:

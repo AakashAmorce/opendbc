@@ -71,6 +71,10 @@ class CarState(CarStateBase, CarStateExt):
     # The wheel's second distance button (farther). Upstream has one gapAdjustCruise type that
     # cycles the personality one way; card publishes this level so the fork can step the other.
     self.distance_more_button = 0
+    # Stock MRCC's following-distance setting, CRZ_CTRL.DISTANCE_SETTING: 1 is 4 bars (longest)
+    # up to 4 for 1 bar (shortest); DISTANCE_LESS raises it. 0 under openpilot longitudinal,
+    # where the radar's CRZ_CTRL is silenced. Read by Dynamic Auto Resume.
+    self.distance_setting = 0
     self.accel_button = 0
     self.decel_button = 0
     self.cancel_button = 0
@@ -328,6 +332,7 @@ class CarState(CarStateBase, CarStateExt):
       # CRZ_AVAILABLE represents adaptive-cruise availability, not the main switch.
       ret.cruiseState.available = cp.vl["CRZ_CTRL"]["CRZ_AVAILABLE"] == 1
       ret.cruiseState.enabled = cp.vl["CRZ_CTRL"]["CRZ_ACTIVE"] == 1
+      self.distance_setting = int(cp.vl["CRZ_CTRL"]["DISTANCE_SETTING"])
     self.brake_pressed_prev = ret.brakePressed
     # PEDALS.STANDSTILL means wheels stopped, not ACC hold. Reporting it under openpilot
     # longitudinal would prevent LongControl from leaving its stopping state.

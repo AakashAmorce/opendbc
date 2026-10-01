@@ -287,3 +287,11 @@ def _initialize_mazda(CP: structs.CarParams, CP_SP: structs.CarParamsSP, params_
     # radar has a moving handover on record yet; when one does, this becomes a firmware rule.
     if CP.openpilotLongitudinalControl and int(params_dict.get("MazdaMovingTakeover", 0)) == 1:
       CP.flags |= MazdaFlags.MOVING_TAKEOVER.value
+    # Dynamic Auto Resume presses stock MRCC's distance switches, so it applies only while MRCC
+    # owns longitudinal; openpilot's own planner already pulls away as the gap opens. The shadow
+    # declaration (developer, no UI) logs what it would press and wins over the toggle.
+    if not CP.openpilotLongitudinalControl:
+      if int(params_dict.get("MazdaDynamicAutoResumeShadow", 0)) == 1:
+        CP_SP.flags |= MazdaFlagsSP.DYNAMIC_AUTO_RESUME_SHADOW.value
+      elif int(params_dict.get("MazdaDynamicAutoResume", 0)) == 1:
+        CP_SP.flags |= MazdaFlagsSP.DYNAMIC_AUTO_RESUME.value

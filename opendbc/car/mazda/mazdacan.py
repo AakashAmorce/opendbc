@@ -262,6 +262,8 @@ def create_button_cmd(packer, CP, counter, button):
   res = int(button == Buttons.RESUME)
   inc = int(button == Buttons.SET_PLUS)
   dec = int(button == Buttons.SET_MINUS)
+  dist_less = int(button == Buttons.DISTANCE_LESS)
+  dist_more = int(button == Buttons.DISTANCE_MORE)
 
   values = {
     # Never pressed by openpilot, on either bus. On the car's side it toggles MADS and arms
@@ -281,11 +283,11 @@ def create_button_cmd(packer, CP, counter, button):
     "SET_M": dec,
     "SET_M_INV": (dec + 1) % 2,
 
-    "DISTANCE_LESS": 0,
-    "DISTANCE_LESS_INV": 1,
+    "DISTANCE_LESS": dist_less,
+    "DISTANCE_LESS_INV": (dist_less + 1) % 2,
 
-    "DISTANCE_MORE": 0,
-    "DISTANCE_MORE_INV": 1,
+    "DISTANCE_MORE": dist_more,
+    "DISTANCE_MORE_INV": (dist_more + 1) % 2,
 
     "MODE_X": 0,
     "MODE_X_INV": 1,

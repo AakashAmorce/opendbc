@@ -7,6 +7,7 @@ from opendbc.car import Bus, DT_CTRL, rate_limit, structs
 from opendbc.car.lateral import apply_driver_steer_torque_limits
 from opendbc.car.interfaces import CarControllerBase
 from opendbc.car.mazda import mazdacan
+from opendbc.car.mazda.dynamic_auto_resume import TAP_PERIOD as DAR_TAP_PERIOD, DynamicAutoResume
 from opendbc.car.mazda.longitudinal import BREAKAWAY_FRAMES, AdvertisedLead, StandstillHold
 from opendbc.car.mazda.radar_session import RadarSessionManager, RadarSessionState
 from opendbc.car.mazda.values import CarControllerParams, Buttons, MazdaFlags
@@ -103,6 +104,12 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     # The white wheel rides the alert frame; on_bus tracks that the white bit is on the wire.
     self.mads_white_hud_off_frames = 0
     self.mads_white_hud_on_bus = False
+    # Dynamic Auto Resume works stock MRCC's distance switches, so it exists only while MRCC owns
+    # longitudinal. The shadow flag runs the same logic and only logs what it would press.
+    self.dar: DynamicAutoResume | None = None
+    dar_flags = MazdaFlagsSP.DYNAMIC_AUTO_RESUME | MazdaFlagsSP.DYNAMIC_AUTO_RESUME_SHADOW
+    if not CP.openpilotLongitudinalControl and CP_SP.flags & dar_flags:
+      self.dar = DynamicAutoResume(shadow=bool(CP_SP.flags & MazdaFlagsSP.DYNAMIC_AUTO_RESUME_SHADOW))
 
   def update(self, CC, CC_SP, CS, now_nanos):
     can_sends = []
@@ -167,6 +174,9 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     if self.CP_SP.flags & MazdaFlagsSP.TJA_BUTTON:
       can_sends.extend(self.update_mrcc_cleanup(CC, CC_SP, CS))
 
+    if self.dar is not None:
+      can_sends.extend(self.update_dynamic_auto_resume(CC, CC_SP, CS))
+
     self.apply_torque_last = apply_torque
 
     if self.CP.openpilotLongitudinalControl:
@@ -181,7 +191,8 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     # Suppress ICBM while cancel/resume is active or the MRCC cleanup owns CRZ_BTNS:
     # the wheel's press pattern owns the counter stream until release.
     icbm_suppress = (CC.cruiseControl.cancel or CC.cruiseControl.resume or CS.cancel_button == 1 or
-                     self.mrcc_undo_pending or CS.tja_button == 1)
+                     self.mrcc_undo_pending or CS.tja_button == 1 or
+                     (self.dar is not None and self.dar.owns_buttons))
     if not icbm_suppress:
       can_sends.extend(IntelligentCruiseButtonManagementInterface.update(self, CC_SP, CS, self.packer, self.frame, self.last_button_frame))
 
@@ -348,6 +359,27 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
       self.dash_warning_on_bus = steer_required
       return [alert]
     return []
+
+  def update_dynamic_auto_resume(self, CC, CC_SP, CS):
+    """Shorten stock MRCC's following distance through a HOLD and restore it after the pull-away
+    (opendbc/car/mazda/dynamic_auto_resume.py). One discrete distance tap at a time, on the same
+    CRZ_BTNS pacing as ICBM and the TJA cleanup (last_button_frame), never while openpilot's own
+    cancel/resume or the TJA cleanup owns the counter stream or a physical button is down. ICBM
+    is held off while a tap sequence runs (icbm_suppress) and otherwise shares the pacing."""
+    buttons_busy = (CC.cruiseControl.cancel or CC.cruiseControl.resume or self.mrcc_undo_pending or
+                    CS.cancel_button or CS.resume_button or CS.accel_button or CS.decel_button or
+                    CS.mrcc_button or CS.tja_button)
+    can_tap = not buttons_busy and (self.frame - self.last_button_frame) * DT_CTRL > DAR_TAP_PERIOD
+    button = self.dar.update(engaged=CS.out.cruiseState.enabled and CC.enabled, standstill=CS.out.standstill,
+                             v_ego=CS.out.vEgo, setting=CS.distance_setting,
+                             lead_present=CC_SP.leadOne.status, lead_d=CC_SP.leadOne.dRel,
+                             driver_distance=bool(CS.distance_button or CS.distance_more_button),
+                             resume_requested=self.resume_requested(CC), can_tap=can_tap)
+    if button is None:
+      return []
+    self.last_button_frame = self.frame
+    # Same counter offset as an ICBM discrete tap: clear of the wheel's next genuine frame.
+    return [mazdacan.create_button_cmd(self.packer, self.CP, CS.crz_btns_counter + 1, button)]
 
   def resume_requested(self, CC) -> bool:
     """The resume button belongs to the stock-longitudinal path alone. Under openpilot longitudinal
